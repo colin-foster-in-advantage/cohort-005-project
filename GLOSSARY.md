@@ -102,3 +102,7 @@ _Avoid_: Alert, Message, Activity
 **Notification Feed**:
 The place inside Cadence where a person sees their Notifications.
 _Avoid_: Inbox, Activity feed
+
+**Notification Type**:
+A named kind of Notification. It fixes what happens to set it off, who it goes to, and where in Cadence it points. Every Notification is of exactly one Notification Type.
+_Avoid_: Category, Event, Template
