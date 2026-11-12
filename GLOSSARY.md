@@ -99,6 +99,10 @@ _Avoid_: Watch cap, Viewing threshold
 A message Cadence sends a person to tell them something that concerns them has happened.
 _Avoid_: Alert, Message, Activity
 
+**Acknowledgement**:
+An email confirming something the recipient themselves just did. It is never a Notification, and it never reaches the Notification Feed.
+_Avoid_: Confirmation, Receipt, Transactional email
+
 **Notification Feed**:
 The place inside Cadence where a person sees their Notifications.
 _Avoid_: Inbox, Activity feed
