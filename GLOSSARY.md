@@ -111,6 +111,10 @@ _Avoid_: Category, Event, Template
 A way a Notification reaches the person it is for. Cadence has two: the Notification Feed, which every Notification always uses, and email, which some Notification Types add on top.
 _Avoid_: Delivery method, Transport, Medium
 
+**Notification Preference**:
+A person's choice about whether a Notification Type reaches them by email. It never affects the Notification Feed, which every Notification always uses.
+_Avoid_: Setting, Subscription, Opt-out
+
 **Announce**:
 An Instructor's deliberate act of telling the Students enrolled on a course that a lesson is ready for them. A lesson is announced at most once, and announcing never changes who can see the lesson.
 _Avoid_: Publish, Release, Push live
