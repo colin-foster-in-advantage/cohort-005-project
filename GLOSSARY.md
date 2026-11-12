@@ -106,3 +106,11 @@ _Avoid_: Inbox, Activity feed
 **Notification Type**:
 A named kind of Notification. It fixes what happens to set it off, who it goes to, and where in Cadence it points. Every Notification is of exactly one Notification Type.
 _Avoid_: Category, Event, Template
+
+**Channel**:
+A way a Notification reaches the person it is for. Cadence has two: the Notification Feed, which every Notification always uses, and email, which some Notification Types add on top.
+_Avoid_: Delivery method, Transport, Medium
+
+**Announce**:
+An Instructor's deliberate act of telling the Students enrolled on a course that a lesson is ready for them. A lesson is announced at most once, and announcing never changes who can see the lesson.
+_Avoid_: Publish, Release, Push live
