@@ -5,6 +5,13 @@ import { DevUI } from "~/components/dev-ui";
 import { Toaster } from "sonner";
 import { getCurrentUserId, getDevCountry } from "~/lib/session";
 import { getCountryTierInfo, COUNTRIES } from "~/lib/ppp";
+// PROTOTYPE (issue #15) — delete with the rest of the feed prototype.
+import {
+  NotificationFeedPrototype,
+  NotificationFeedPrototypePage,
+  useFeedVariant,
+} from "~/components/notification-feed-prototype";
+import { fetchKnockFeed } from "~/lib/knock-feed-prototype.server";
 import { eq, and, or, sql, desc } from "drizzle-orm";
 import { db } from "~/db";
 import {
@@ -178,6 +185,13 @@ export async function loader({ request }: Route.LoaderArgs) {
   const devCountry = await getDevCountry(request);
   const countryTierInfo = getCountryTierInfo(devCountry);
 
+  // PROTOTYPE (issue #15) — only pays the Knock round-trip when ?feed= is on.
+  const wantsFeedPrototype = new URL(request.url).searchParams.has("feed");
+  const notificationFeed =
+    wantsFeedPrototype && currentUserId
+      ? await fetchKnockFeed(currentUserId)
+      : null;
+
   const recentCourses = currentUserId
     ? getRecentlyProgressedCourses(currentUserId).map((course) => {
         const completedLessons = getCompletedLessonCount(
@@ -213,6 +227,7 @@ export async function loader({ request }: Route.LoaderArgs) {
     countryTierInfo,
     countries: COUNTRIES,
     isTeamAdmin: currentUserId ? isTeamAdmin(currentUserId) : false,
+    notificationFeed,
   };
 }
 
@@ -225,7 +240,11 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
     countryTierInfo,
     countries,
     isTeamAdmin: userIsTeamAdmin,
+    notificationFeed,
   } = loaderData;
+
+  // PROTOTYPE (issue #15) — delete with the rest of the feed prototype.
+  const feedVariant = useFeedVariant();
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -233,10 +252,25 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
         currentUser={currentUser}
         recentCourses={recentCourses}
         isTeamAdmin={userIsTeamAdmin}
+        prototypeNavSlot={
+          feedVariant === "B" || feedVariant === "C" ? (
+            <div id="prototype-nav-slot" />
+          ) : null
+        }
       />
       <main className="flex-1 overflow-y-auto">
-        <Outlet />
+        {feedVariant === "C" && notificationFeed ? (
+          <NotificationFeedPrototypePage feed={notificationFeed} />
+        ) : (
+          <Outlet />
+        )}
       </main>
+      {feedVariant && (
+        <NotificationFeedPrototype
+          feed={notificationFeed}
+          variant={feedVariant}
+        />
+      )}
       <DevUI
         users={users}
         currentUser={currentUser}

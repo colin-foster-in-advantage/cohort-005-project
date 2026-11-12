@@ -41,6 +41,8 @@ interface SidebarProps {
   currentUser: CurrentUser | null;
   recentCourses?: RecentCourse[];
   isTeamAdmin?: boolean;
+  /** PROTOTYPE (issue #15) — slot for the feed prototype's nav entry. */
+  prototypeNavSlot?: React.ReactNode;
 }
 
 interface NavItem {
@@ -117,6 +119,7 @@ export function Sidebar({
   currentUser,
   recentCourses = [],
   isTeamAdmin = false,
+  prototypeNavSlot,
 }: SidebarProps) {
   const currentUserRole = currentUser?.role ?? null;
   const [isDark, setIsDark] = useState(false);
@@ -143,6 +146,7 @@ export function Sidebar({
       </div>
 
       <nav className="flex-1 space-y-1 p-3">
+        {prototypeNavSlot}
         {navItems
           .filter((item) => isVisible(item, currentUserRole))
           .map((item) => (
