@@ -114,3 +114,11 @@ _Avoid_: Delivery method, Transport, Medium
 **Announce**:
 An Instructor's deliberate act of telling the Students enrolled on a course that a lesson is ready for them. A lesson is announced at most once, and announcing never changes who can see the lesson.
 _Avoid_: Publish, Release, Push live
+
+**Actor**:
+The person whose action set off a Notification, named to the person who receives it. Some Notification Types have no Actor, either because nobody did the thing or because who did it is none of the recipient's business.
+_Avoid_: Sender, Author, Triggerer
+
+**Excerpt**:
+A short, quoted piece of something a person wrote, carried by a Notification so the recipient can judge it without opening it. A Notification has at most one, and only ever of words a person typed.
+_Avoid_: Preview, Snippet, Summary
