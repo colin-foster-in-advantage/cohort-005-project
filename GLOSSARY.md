@@ -96,11 +96,11 @@ _Avoid_: Watch cap, Viewing threshold
 ### Notifications
 
 **Notification**:
-A message Cadence sends a person to tell them something that concerns them has happened.
+A message Cadence sends a person to tell them something that concerns them has happened. It is best-effort: losing one is bad, but never bad enough to undo the action that caused it.
 _Avoid_: Alert, Message, Activity
 
 **Acknowledgement**:
-An email confirming something the recipient themselves just did. It is never a Notification, and it never reaches the Notification Feed.
+An email confirming something the recipient themselves just did. It is never a Notification, and it never reaches the Notification Feed. Unlike a Notification, it is owed to the recipient: failing to send one fails the action that caused it.
 _Avoid_: Confirmation, Receipt, Transactional email
 
 **Notification Feed**:
