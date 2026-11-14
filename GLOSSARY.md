@@ -116,8 +116,12 @@ A way a Notification reaches the person it is for. Cadence has two: the Notifica
 _Avoid_: Delivery method, Transport, Medium
 
 **Notification Preference**:
-A person's choice about whether a Notification Type reaches them by email. It never affects the Notification Feed, which every Notification always uses.
+A person's choice about whether a Notification Type reaches them by email. It never affects the Notification Feed, which every Notification always uses. It overrides the Default Notification Preference for that one Notification Type and leaves every other one alone. Once a person has made the choice, it stays theirs: a later change to the default no longer reaches them.
 _Avoid_: Setting, Subscription, Opt-out
+
+**Default Notification Preference**:
+Whether a Notification Type reaches someone by email when they have never chosen for themselves. It is nobody's choice in particular; it is the answer Cadence starts everyone with, and it can be changed for everyone who has not yet chosen. Where there is no Default Notification Preference for a Notification Type, email is on.
+_Avoid_: Default setting, Fallback preference, Global preference
 
 **Announce**:
 An Instructor's deliberate act of telling the Students enrolled on a course that a lesson is ready for them. A lesson is announced at most once, and announcing never changes who can see the lesson.
