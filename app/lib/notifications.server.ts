@@ -175,10 +175,12 @@ export type NotificationTriggerRequest = {
   idempotencyKey: string;
 };
 
-/** The channel types a Notification Preference can switch. */
+/**
+ * The channel types one preference write carries. Email is the only one
+ * Cadence ever writes: the Feed is mandatory, so it is never a preference.
+ */
 export type NotificationChannels = {
   email: boolean;
-  in_app_feed: boolean;
 };
 
 export type NotificationTransport = {
@@ -193,11 +195,18 @@ export type NotificationTransport = {
   ): Promise<void>;
 };
 
+const KNOCK_TIMEOUT_MS = 5_000;
+const KNOCK_BASE_URL = "https://api.knock.app";
+
 export function knockTransport(apiKey: string): NotificationTransport {
   // Explicit, not the SDK defaults of 60s and two retries: a trigger is awaited
   // inline on the user's POST, so a Knock outage would otherwise hang it for
   // minutes. There is no retry logic of our own on top.
-  const client = new Knock({ apiKey, timeout: 5_000, maxRetries: 1 });
+  const client = new Knock({
+    apiKey,
+    timeout: KNOCK_TIMEOUT_MS,
+    maxRetries: 1,
+  });
 
   return {
     async trigger(key, { recipients, data, idempotencyKey }) {
@@ -208,9 +217,29 @@ export function knockTransport(apiKey: string): NotificationTransport {
       );
     },
     async setPreference(knockUserId, workflowKey, channels) {
-      await client.users.setPreferences(knockUserId, "default", {
-        workflows: { [workflowKey]: { channel_types: channels } },
-      });
+      // The per-workflow PUT, which merges and so leaves sibling workflow keys
+      // alone. The wholesale PUT .../preferences/default replaces the set, and
+      // @knocklabs/node 1.x exposes only that one — hence the hand-rolled
+      // request, the same way postmarkTransport hand-rolls its own.
+      const response = await fetch(
+        `${KNOCK_BASE_URL}/v1/users/${encodeURIComponent(knockUserId)}/preferences/default/workflows/${encodeURIComponent(workflowKey)}`,
+        {
+          method: "PUT",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify({ channel_types: channels }),
+          signal: AbortSignal.timeout(KNOCK_TIMEOUT_MS),
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error(
+          `Knock rejected the ${workflowKey} preference for ${knockUserId}: ${response.status}`
+        );
+      }
     },
   };
 }
@@ -255,14 +284,19 @@ export async function triggerNotification(
 }
 
 /**
- * Writes one Notification Preference. Unlike a trigger this throws: a person
- * who flipped a switch must be told when it didn't take.
+ * Writes one Notification Preference — one workflow key, one call. It builds
+ * the channel map itself and takes a boolean, never a caller-supplied map: the
+ * per-workflow write replaces that workflow's entry wholesale, so a map from
+ * outside could silently drop a sibling channel. The signature is the guard.
+ *
+ * Unlike a trigger this throws: a person who flipped a switch must be told when
+ * it didn't take.
  */
-export async function setNotificationPreference(
+export async function setEmailPreference(
   knockUserId: string,
   workflowKey: NotificationWorkflowKey,
-  channels: NotificationChannels,
+  enabled: boolean,
   transport: NotificationTransport = defaultTransport()
 ): Promise<void> {
-  await transport.setPreference(knockUserId, workflowKey, channels);
+  await transport.setPreference(knockUserId, workflowKey, { email: enabled });
 }

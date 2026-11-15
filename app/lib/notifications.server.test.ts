@@ -14,7 +14,7 @@ import {
   notificationRecipient,
   platformAdminRecipients,
   quotedName,
-  setNotificationPreference,
+  setEmailPreference,
   triggerNotification,
   WORKFLOW_KEYS,
 } from "./notifications.server";
@@ -220,14 +220,14 @@ describe("triggerNotification", () => {
   });
 });
 
-describe("setNotificationPreference", () => {
-  it("writes one workflow key with the channel map it is given", async () => {
+describe("setEmailPreference", () => {
+  it("builds the channel map itself, so no caller can drop a sibling channel", async () => {
     const { transport, preferences } = recordingTransport();
 
-    await setNotificationPreference(
+    await setEmailPreference(
       "user_3",
       WORKFLOW_KEYS.questionAsked,
-      { email: false, in_app_feed: true },
+      false,
       transport
     );
 
@@ -235,17 +235,32 @@ describe("setNotificationPreference", () => {
       {
         knockUserId: "user_3",
         workflowKey: "question-asked",
-        channels: { email: false, in_app_feed: true },
+        channels: { email: false },
       },
     ]);
   });
 
+  it("writes exactly one workflow key per flip, leaving siblings alone", async () => {
+    const { transport, preferences } = recordingTransport();
+
+    await setEmailPreference(
+      "user_3",
+      WORKFLOW_KEYS.seatClaimed,
+      true,
+      transport
+    );
+
+    expect(preferences).toHaveLength(1);
+    expect(preferences[0]!.workflowKey).toBe("seat-claimed");
+    expect(Object.keys(preferences[0]!.channels)).toEqual(["email"]);
+  });
+
   it("throws when the write fails — a preference is owed, not best-effort", async () => {
     await expect(
-      setNotificationPreference(
+      setEmailPreference(
         "user_3",
         WORKFLOW_KEYS.questionAsked,
-        { email: false, in_app_feed: true },
+        false,
         throwingTransport()
       )
     ).rejects.toThrow();
