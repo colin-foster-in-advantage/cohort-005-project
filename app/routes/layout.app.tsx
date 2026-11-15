@@ -6,6 +6,7 @@ import {
   type KnockFeedConfig,
 } from "~/components/notification-feed";
 import { DevUI } from "~/components/dev-ui";
+import { NotificationDrawer } from "~/components/notification-drawer";
 import { Toaster } from "sonner";
 import { getCurrentUserId, getDevCountry } from "~/lib/session";
 import { getCountryTierInfo, COUNTRIES } from "~/lib/ppp";
@@ -271,6 +272,8 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
         <main className="flex-1 overflow-y-auto">
           <Outlet />
         </main>
+        {/* Mounted beside the outlet, not inside it, so navigating never closes it. */}
+        <NotificationDrawer />
         <DevUI
           users={users}
           currentUser={currentUser}
