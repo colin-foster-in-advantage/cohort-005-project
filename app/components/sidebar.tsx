@@ -3,7 +3,9 @@ import { useState, useEffect } from "react";
 import { cn } from "~/lib/utils";
 import { UserRole } from "~/db/schema";
 import { UserAvatar } from "~/components/user-avatar";
+import { useNotificationFeed } from "~/components/notification-feed";
 import {
+  Bell,
   BookOpen,
   ChartColumn,
   LayoutDashboard,
@@ -107,6 +109,29 @@ const navItems: NavItem[] = [
   },
 ];
 
+// The unread count is Knock's, read straight from its store. Cadence keeps no
+// count of its own, so the badge can briefly lead the list — which is correct:
+// something did arrive. The sidebar never says whether live updates are down.
+function NotificationsNavItem() {
+  const { unreadCount, openDrawer } = useNotificationFeed();
+
+  return (
+    <button
+      type="button"
+      onClick={openDrawer}
+      className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-medium text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+    >
+      <Bell className="size-4" />
+      Notifications
+      {unreadCount > 0 && (
+        <span className="ml-auto min-w-5 rounded-full bg-primary px-1.5 py-0.5 text-center text-xs font-semibold text-primary-foreground">
+          {unreadCount > 99 ? "99+" : unreadCount}
+        </span>
+      )}
+    </button>
+  );
+}
+
 function isVisible(item: NavItem, role: UserRole | null): boolean {
   if (item.roles === "all") return true;
   if (!role) return false;
@@ -162,6 +187,7 @@ export function Sidebar({
               {item.label}
             </NavLink>
           ))}
+        <NotificationsNavItem />
         {isTeamAdmin && (
           <NavLink
             to="/team"
