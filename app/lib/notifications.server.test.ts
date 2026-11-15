@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import * as schema from "~/db/schema";
 import { RefundStatus, UserRole } from "~/db/schema";
 import {
@@ -13,7 +13,7 @@ import {
   knockUserId,
   notificationRecipient,
   platformAdminRecipients,
-  quotedName,
+  cappedName,
   readEmailPreferences,
   setEmailPreference,
   triggerNotification,
@@ -79,23 +79,23 @@ describe("excerpt", () => {
   });
 });
 
-describe("quotedName", () => {
-  it("wraps a course or lesson name in curly double quotes", () => {
-    expect(quotedName("Advanced TypeScript")).toBe("“Advanced TypeScript”");
+describe("cappedName", () => {
+  it("carries a course or lesson name unquoted — the quotes live in Liquid", () => {
+    expect(cappedName("Advanced TypeScript")).toBe("Advanced TypeScript");
   });
 
   it("caps a name at 60 characters on a word boundary", () => {
     const word = "abcdefghi";
     const long = Array(10).fill(word).join(" ");
 
-    const result = quotedName(long);
+    const result = cappedName(long);
 
-    expect(result).toBe(`“${Array(6).fill(word).join(" ")}…”`);
-    expect(result.length - 2).toBe(60);
+    expect(result).toBe(`${Array(6).fill(word).join(" ")}…`);
+    expect(result.length).toBe(60);
   });
 
   it("collapses newlines in a name", () => {
-    expect(quotedName("Module one\nand two")).toBe("“Module one and two”");
+    expect(cappedName("Module one\nand two")).toBe("Module one and two");
   });
 });
 
@@ -373,6 +373,61 @@ describe("notifying that a Refund Request was opened", () => {
     );
     logged.mockRestore();
   });
+
+  it("never tells a Platform Admin about the refund they asked for themselves", async () => {
+    const { db, base, platformAdmin } = seedRefundWorld();
+    const purchase = buy(db, platformAdmin.id, base.course.id);
+    const refundRequest = openRefundRequest(db, purchase.id, "Wrong course.");
+    const { transport, calls } = recordingTransport();
+
+    await notifyRefundRequestOpened(db, refundRequest.id, transport);
+
+    expect(calls).toEqual([]);
+  });
+
+  it("still tells the other Platform Admins when one of them is the buyer", async () => {
+    const { db, base, platformAdmin } = seedRefundWorld();
+    const second = db
+      .insert(schema.users)
+      .values({
+        name: "Sam Admin",
+        email: "sam@example.com",
+        role: UserRole.Admin,
+      })
+      .returning()
+      .get();
+    const purchase = buy(db, platformAdmin.id, base.course.id);
+    const refundRequest = openRefundRequest(db, purchase.id, "Wrong course.");
+    const { transport, calls } = recordingTransport();
+
+    await notifyRefundRequestOpened(db, refundRequest.id, transport);
+
+    expect(calls[0]!.recipients.map((recipient) => recipient.id)).toEqual([
+      `user_${second.id}`,
+    ]);
+  });
+
+  it("swallows a failing recipient lookup, not just a failing transport", async () => {
+    const { db, base } = seedRefundWorld();
+    const purchase = buy(db, base.user.id, base.course.id);
+    const refundRequest = openRefundRequest(db, purchase.id, "Wrong course.");
+    const { transport } = recordingTransport();
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    // The table the recipient lookup reads is gone: the Refund Request is
+    // already inserted, so a throw here would surface at the buyer's form.
+    db.run(sql`PRAGMA foreign_keys = OFF`);
+    db.run(sql`DROP TABLE users`);
+
+    await expect(
+      notifyRefundRequestOpened(db, refundRequest.id, transport)
+    ).resolves.toBeUndefined();
+
+    expect(logged).toHaveBeenCalledWith(
+      expect.stringContaining(`refund-opened:${refundRequest.id}`),
+      expect.any(Error)
+    );
+    logged.mockRestore();
+  });
 });
 
 describe("notifying that a Refund Request was decided", () => {
@@ -533,6 +588,29 @@ describe("notifying that a Refund Request was decided", () => {
         .where(eq(schema.refunds.id, refundRequest.id))
         .get()!.status
     ).toBe(RefundStatus.Approved);
+    logged.mockRestore();
+  });
+
+  it("swallows a failing context lookup, not just a failing transport", async () => {
+    const { db, base } = seedRefundWorld();
+    const purchase = buy(db, base.user.id, base.course.id);
+    const refundRequest = openRefundRequest(db, purchase.id, "Wrong course.");
+    decide(db, refundRequest.id, RefundStatus.Approved, null);
+    const { transport } = recordingTransport();
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    // The decision's transaction has already committed, so a throw here would
+    // land in the Platform Admin's face over work that is done.
+    db.run(sql`PRAGMA foreign_keys = OFF`);
+    db.run(sql`DROP TABLE users`);
+
+    await expect(
+      notifyRefundRequestDecided(db, refundRequest.id, transport)
+    ).resolves.toBeUndefined();
+
+    expect(logged).toHaveBeenCalledWith(
+      expect.stringContaining(`refund-decided:${refundRequest.id}`),
+      expect.any(Error)
+    );
     logged.mockRestore();
   });
 });
@@ -767,10 +845,29 @@ describe("announcing a lesson", () => {
 
     expect(calls[0]!.data).toEqual({
       actor_name: "Test Instructor",
-      course_title: "“Test Course”",
-      lesson_title: "“Streams and buffers”",
+      course_title: "Test Course",
+      lesson_title: "Streams and buffers",
       action_url: `/courses/test-course/lessons/${lessonId}`,
     });
+  });
+
+  it("logs the workflow key, recipient count and idempotency key when Knock fails", async () => {
+    enrol("Ada", "ada@example.com");
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await announceLesson(
+      db,
+      lessonId,
+      base.instructor.id,
+      NOW,
+      throwingTransport()
+    );
+
+    const message = logged.mock.calls.map(String).join(" ");
+    expect(message).toContain(WORKFLOW_KEYS.newLessonAnnounced);
+    expect(message).toContain("1 recipient");
+    expect(message).toContain(`lesson-announced:${lessonId}:0`);
+    logged.mockRestore();
   });
 });
 

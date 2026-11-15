@@ -51,11 +51,20 @@ export const WORKFLOW_KEYS = {
 export type NotificationWorkflowKey =
   (typeof WORKFLOW_KEYS)[keyof typeof WORKFLOW_KEYS];
 
+/** Narrows a form field to a workflow key, so no caller has to assert one. */
+export function isNotificationWorkflowKey(
+  value: string
+): value is NotificationWorkflowKey {
+  return Object.values(WORKFLOW_KEYS).some((key) => key === value);
+}
+
 type Db = BetterSQLite3Database<typeof schema>;
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
-type Queryable = Db | Tx;
 
-type UserRow = typeof users.$inferSelect;
+/** A database handle a lookup can run on, inside a transaction or outside one. */
+export type Queryable = Db | Tx;
+
+export type UserRow = typeof users.$inferSelect;
 
 /**
  * A recipient as Knock stores it. Knock holds email and name only — role,
@@ -129,16 +138,6 @@ export function excerpt(body: string): string | undefined {
 export function cappedName(name: string): string {
   const flattened = name.replace(/\s+/g, " ").trim();
   return truncateOnWordBoundary(flattened, NAME_MAX_LENGTH);
-}
-
-/**
- * A course or lesson name as it appears in Notification copy: flattened,
- * capped at 60 characters on a word boundary, in curly double quotes. CSS
- * clamps the Feed title; an email subject has no CSS, so the cap is in the
- * payload.
- */
-export function quotedName(name: string): string {
-  return `“${cappedName(name)}”`;
 }
 
 function flattenToPlainText(markdown: string): string {
@@ -363,6 +362,56 @@ export async function setEmailPreference(
   await transport.setPreference(knockUserId, workflowKey, { email: enabled });
 }
 
+/**
+ * The one swallow-and-log shape every trigger goes through (PRD §8). The plan
+ * runs inside the try, so a failing recipient lookup is swallowed exactly as a
+ * failing transport is: by the time any trigger runs, the write that caused it
+ * has already committed, and a throw would be a lie about work that is done.
+ *
+ * A plan returning `null` could not be built at all — a missing lesson, a
+ * coupon nobody redeemed. An empty array is nothing to tell, which is not a
+ * failure: an empty `recipients` array is a 422 at Knock, so we never send one.
+ *
+ * Returns false when anything failed. Only New Lesson Announced reads it.
+ *
+ * The fallback names the send for the log when planning never got far enough
+ * to name it itself — which is why its key is a string: the comment trigger's
+ * Notification Type is not known until the comment has been read.
+ */
+async function triggerQuietly(
+  fallback: { key: string; idempotencyKey: string },
+  plan: () => PlannedTrigger[] | null,
+  transport: NotificationTransport
+): Promise<boolean> {
+  let attempt = fallback;
+  let recipientCount = 0;
+
+  try {
+    const planned = plan();
+    if (planned === null) return false;
+
+    for (const { key, request } of planned) {
+      attempt = { key, idempotencyKey: request.idempotencyKey };
+      recipientCount = request.recipients.length;
+      await triggerNotification(key, request, transport);
+    }
+
+    return true;
+  } catch (error) {
+    console.error(
+      `Notification ${attempt.key} failed for ${recipientCount} recipient(s) (${attempt.idempotencyKey})`,
+      error
+    );
+    return false;
+  }
+}
+
+/** One send: which Type, to whom, with what. */
+type PlannedTrigger = {
+  key: NotificationWorkflowKey;
+  request: NotificationTriggerRequest;
+};
+
 // ─── Triggers ───
 
 // Refund triggers: both fire inline from a route action, after the write.
@@ -422,25 +471,39 @@ export async function notifyRefundRequestOpened(
   refundRequestId: number,
   transport: NotificationTransport = defaultTransport()
 ): Promise<void> {
-  const context = refundContext(db, refundRequestId);
-  if (!context) return;
-
-  const recipients = platformAdminRecipients(db);
-  if (recipients.length === 0) return;
-
-  const reason = excerpt(context.refundRequest.reason);
+  const idempotencyKey = `refund-opened:${refundRequestId}`;
 
   await triggerQuietly(
-    WORKFLOW_KEYS.refundRequestOpened,
-    {
-      recipients,
-      data: {
-        actor_name: context.buyer.name,
-        course_title: cappedName(context.course.title),
-        ...(reason ? { excerpt: reason } : {}),
-        action_url: ADMIN_REFUNDS_PATH,
-      },
-      idempotencyKey: `refund-opened:${refundRequestId}`,
+    { key: WORKFLOW_KEYS.refundRequestOpened, idempotencyKey },
+    () => {
+      const context = refundContext(db, refundRequestId);
+      if (!context) return [];
+
+      // Never your own action: a Platform Admin who asked for this refund
+      // themselves hears nothing about it.
+      const buyerId = knockUserId(context.buyer);
+      const recipients = platformAdminRecipients(db).filter(
+        (recipient) => recipient.id !== buyerId
+      );
+      if (recipients.length === 0) return [];
+
+      const reason = excerpt(context.refundRequest.reason);
+
+      return [
+        {
+          key: WORKFLOW_KEYS.refundRequestOpened,
+          request: {
+            recipients,
+            data: {
+              actor_name: context.buyer.name,
+              course_title: cappedName(context.course.title),
+              ...(reason ? { excerpt: reason } : {}),
+              action_url: ADMIN_REFUNDS_PATH,
+            },
+            idempotencyKey,
+          },
+        },
+      ];
     },
     transport
   );
@@ -460,53 +523,46 @@ export async function notifyRefundRequestDecided(
   refundRequestId: number,
   transport: NotificationTransport = defaultTransport()
 ): Promise<void> {
-  const context = refundContext(db, refundRequestId);
-  if (!context) return;
-
-  const { refundRequest, purchase, buyer, course } = context;
-  if (
-    refundRequest.status !== RefundStatus.Approved &&
-    refundRequest.status !== RefundStatus.Declined
-  ) {
-    return;
-  }
-
-  // An approval's note is optional; a decline always carries one.
-  const note = refundRequest.decisionNote
-    ? excerpt(refundRequest.decisionNote)
-    : undefined;
+  const idempotencyKey = `refund-decided:${refundRequestId}`;
 
   await triggerQuietly(
-    WORKFLOW_KEYS.refundRequestDecided,
-    {
-      recipients: [notificationRecipient(buyer)],
-      data: {
-        course_title: cappedName(course.title),
-        decision: refundRequest.status,
-        amount: formatPrice(purchase.amountPaid),
-        ...(note ? { excerpt: note } : {}),
-        action_url: `/courses/${course.slug}`,
-      },
-      idempotencyKey: `refund-decided:${refundRequestId}`,
+    { key: WORKFLOW_KEYS.refundRequestDecided, idempotencyKey },
+    () => {
+      const context = refundContext(db, refundRequestId);
+      if (!context) return [];
+
+      const { refundRequest, purchase, buyer, course } = context;
+      if (
+        refundRequest.status !== RefundStatus.Approved &&
+        refundRequest.status !== RefundStatus.Declined
+      ) {
+        return [];
+      }
+
+      // An approval's note is optional; a decline always carries one.
+      const note = refundRequest.decisionNote
+        ? excerpt(refundRequest.decisionNote)
+        : undefined;
+
+      return [
+        {
+          key: WORKFLOW_KEYS.refundRequestDecided,
+          request: {
+            recipients: [notificationRecipient(buyer)],
+            data: {
+              course_title: cappedName(course.title),
+              decision: refundRequest.status,
+              amount: formatPrice(purchase.amountPaid),
+              ...(note ? { excerpt: note } : {}),
+              action_url: `/courses/${course.slug}`,
+            },
+            idempotencyKey,
+          },
+        },
+      ];
     },
     transport
   );
-}
-
-/** Logs and returns: a Notification is best-effort, never owed. */
-async function triggerQuietly(
-  key: NotificationWorkflowKey,
-  request: NotificationTriggerRequest,
-  transport: NotificationTransport
-): Promise<void> {
-  try {
-    await triggerNotification(key, request, transport);
-  } catch (error) {
-    console.error(
-      `Notification ${key} failed for ${request.recipients.length} recipient(s) (${request.idempotencyKey})`,
-      error
-    );
-  }
 }
 
 // New Lesson Announced: the one Notification a human presses a button for, and so the one that can
@@ -552,56 +608,58 @@ export async function notifyNewLessonAnnounced(
 ): Promise<boolean> {
   const idempotencyKey = `lesson-announced:${lessonId}`;
 
-  try {
-    const context = announceContext(db, lessonId);
-    if (!context) return false;
+  return await triggerQuietly(
+    { key: WORKFLOW_KEYS.newLessonAnnounced, idempotencyKey },
+    () => {
+      const context = announceContext(db, lessonId);
+      if (!context) return null;
 
-    const { lesson, course } = context;
-    const recipients = enrolledStudentRecipients(db, course.id, instructorId);
-    // Nobody to tell is not a failure: the stamp records the act, not a
-    // delivery, and an empty recipients array is a 422 from Knock.
-    if (recipients.length === 0) return true;
-
-    const actor = db
-      .select()
-      .from(users)
-      .where(eq(users.id, instructorId))
-      .get();
-
-    const data = {
-      actor_name: actor?.name ?? "",
-      course_title: quotedName(course.title),
-      lesson_title: quotedName(lesson.title),
-      action_url: `/courses/${course.slug}/lessons/${lesson.id}`,
-    };
-
-    for (
-      let index = 0;
-      index * ANNOUNCE_CHUNK_SIZE < recipients.length;
-      index++
-    ) {
-      await triggerNotification(
-        WORKFLOW_KEYS.newLessonAnnounced,
-        {
-          recipients: recipients.slice(
-            index * ANNOUNCE_CHUNK_SIZE,
-            (index + 1) * ANNOUNCE_CHUNK_SIZE
-          ),
-          data,
-          idempotencyKey: `${idempotencyKey}:${index}`,
-        },
-        transport
+      const { lesson, course } = context;
+      const recipients = enrolledStudentRecipients(
+        db,
+        course.id,
+        instructorId
       );
-    }
+      // Nobody to tell is not a failure: the stamp records the act, not a
+      // delivery, and an empty recipients array is a 422 from Knock.
+      if (recipients.length === 0) return [];
 
-    return true;
-  } catch (error) {
-    console.error(
-      `${WORKFLOW_KEYS.newLessonAnnounced} failed (${idempotencyKey})`,
-      error
-    );
-    return false;
-  }
+      const actor = db
+        .select()
+        .from(users)
+        .where(eq(users.id, instructorId))
+        .get();
+
+      const data = {
+        actor_name: actor?.name ?? "",
+        course_title: cappedName(course.title),
+        lesson_title: cappedName(lesson.title),
+        action_url: `/courses/${course.slug}/lessons/${lesson.id}`,
+      };
+
+      const chunks: PlannedTrigger[] = [];
+      for (
+        let index = 0;
+        index * ANNOUNCE_CHUNK_SIZE < recipients.length;
+        index++
+      ) {
+        chunks.push({
+          key: WORKFLOW_KEYS.newLessonAnnounced,
+          request: {
+            recipients: recipients.slice(
+              index * ANNOUNCE_CHUNK_SIZE,
+              (index + 1) * ANNOUNCE_CHUNK_SIZE
+            ),
+            data,
+            idempotencyKey: `${idempotencyKey}:${index}`,
+          },
+        });
+      }
+
+      return chunks;
+    },
+    transport
+  );
 }
 
 function announceContext(db: Queryable, lessonId: number) {
@@ -626,7 +684,7 @@ function announceContext(db: Queryable, lessonId: number) {
     .get();
   if (!course) return undefined;
 
-  return { lesson, module: mod, course };
+  return { lesson, course };
 }
 
 /**
@@ -741,11 +799,6 @@ export async function announceLesson(
 // Received for the parent comment's author. Both comment routes call this one
 // function, so neither can pick the wrong Type.
 
-type CommentNotification = {
-  key: NotificationWorkflowKey;
-  request: NotificationTriggerRequest;
-};
-
 /**
  * Fires the Notification a newly written comment owes, if it owes one.
  *
@@ -763,22 +816,18 @@ export async function notifyOnComment(
   commentId: number,
   transport: NotificationTransport = defaultTransport()
 ): Promise<void> {
-  let planned: CommentNotification | null = null;
-
-  try {
-    planned = planCommentNotification(db, commentId);
-    if (!planned) return;
-
-    await triggerNotification(planned.key, planned.request, transport);
-  } catch (error) {
-    const key = planned?.key ?? "a comment notification";
-    const count = planned?.request.recipients.length ?? 0;
-    const idempotencyKey = planned?.request.idempotencyKey ?? `(none)`;
-    console.error(
-      `Knock trigger ${key} failed for ${count} recipient(s), idempotency key ${idempotencyKey}:`,
-      error
-    );
-  }
+  await triggerQuietly(
+    {
+      // Which of the two Types this is isn't known until the comment is read.
+      key: `${WORKFLOW_KEYS.questionAsked} or ${WORKFLOW_KEYS.replyReceived}`,
+      idempotencyKey: `comment:${commentId}`,
+    },
+    () => {
+      const planned = planCommentNotification(db, commentId);
+      return planned ? [planned] : [];
+    },
+    transport
+  );
 }
 
 /**
@@ -790,7 +839,7 @@ export async function notifyOnComment(
 function planCommentNotification(
   db: Queryable,
   commentId: number
-): CommentNotification | null {
+): PlannedTrigger | null {
   const comment = db
     .select()
     .from(comments)
@@ -828,6 +877,9 @@ function planCommentNotification(
   if (!recipient) return null;
 
   const topLevel = comment.parentId === null;
+  // Omitted, never sent as undefined: a comment that is only a code fence or
+  // an image has nothing a person typed, and renders as a one-line row.
+  const body = excerpt(comment.body);
 
   return {
     key: topLevel ? WORKFLOW_KEYS.questionAsked : WORKFLOW_KEYS.replyReceived,
@@ -840,7 +892,7 @@ function planCommentNotification(
       data: {
         actor_name: actor.name,
         lesson_title: cappedName(destination.lessonTitle),
-        excerpt: excerpt(comment.body),
+        ...(body ? { excerpt: body } : {}),
         action_url: `/courses/${destination.courseSlug}/lessons/${comment.lessonId}`,
       },
       // Derived from the causing row's primary key, never generated, so it is
@@ -886,65 +938,63 @@ export async function notifySeatClaimed(
   transport: NotificationTransport = defaultTransport()
 ): Promise<void> {
   const idempotencyKey = `${WORKFLOW_KEYS.seatClaimed}:${couponId}`;
-  let recipientCount = 0;
 
-  try {
-    const coupon = db
-      .select()
-      .from(coupons)
-      .where(eq(coupons.id, couponId))
-      .get();
-    const claimerId = coupon?.redeemedByUserId;
-    if (!coupon || claimerId === null || claimerId === undefined) return;
+  await triggerQuietly(
+    { key: WORKFLOW_KEYS.seatClaimed, idempotencyKey },
+    () => {
+      const coupon = db
+        .select()
+        .from(coupons)
+        .where(eq(coupons.id, couponId))
+        .get();
+      const claimerId = coupon?.redeemedByUserId;
+      if (!coupon || claimerId === null || claimerId === undefined) return [];
 
-    const claimer = db
-      .select()
-      .from(users)
-      .where(eq(users.id, claimerId))
-      .get();
-    const course = db
-      .select()
-      .from(courses)
-      .where(eq(courses.id, coupon.courseId))
-      .get();
-    if (!claimer || !course) return;
+      const claimer = db
+        .select()
+        .from(users)
+        .where(eq(users.id, claimerId))
+        .get();
+      const course = db
+        .select()
+        .from(courses)
+        .where(eq(courses.id, coupon.courseId))
+        .get();
+      if (!claimer || !course) return [];
 
-    const recipients = db
-      .select({ id: users.id, email: users.email, name: users.name })
-      .from(teamMembers)
-      .innerJoin(users, eq(users.id, teamMembers.userId))
-      .where(
-        and(
-          eq(teamMembers.teamId, coupon.teamId),
-          eq(teamMembers.role, TeamMemberRole.Admin),
-          ne(users.id, claimerId)
+      const recipients = db
+        .select({ id: users.id, email: users.email, name: users.name })
+        .from(teamMembers)
+        .innerJoin(users, eq(users.id, teamMembers.userId))
+        .where(
+          and(
+            eq(teamMembers.teamId, coupon.teamId),
+            eq(teamMembers.role, TeamMemberRole.Admin),
+            ne(users.id, claimerId)
+          )
         )
-      )
-      .all()
-      .map(notificationRecipient);
+        .all()
+        .map(notificationRecipient);
 
-    recipientCount = recipients.length;
-    if (recipientCount === 0) return;
+      if (recipients.length === 0) return [];
 
-    await triggerNotification(
-      WORKFLOW_KEYS.seatClaimed,
-      {
-        recipients,
-        data: {
-          actor_name: claimer.name,
-          course_title: cappedName(course.title),
-          action_url: TEAM_PAGE_URL,
+      return [
+        {
+          key: WORKFLOW_KEYS.seatClaimed,
+          request: {
+            recipients,
+            data: {
+              actor_name: claimer.name,
+              course_title: cappedName(course.title),
+              action_url: TEAM_PAGE_URL,
+            },
+            idempotencyKey,
+          },
         },
-        idempotencyKey,
-      },
-      transport
-    );
-  } catch (error) {
-    console.error(
-      `${WORKFLOW_KEYS.seatClaimed} failed for ${recipientCount} recipient(s) (${idempotencyKey})`,
-      error
-    );
-  }
+      ];
+    },
+    transport
+  );
 }
 
 /**
@@ -980,13 +1030,23 @@ export async function readEmailPreferences(
 
   const preferenceSet = await transport.getPreferences(knockUserId(user));
   const workflows = preferenceSet.workflows ?? {};
+  const setting = (key: NotificationWorkflowKey) =>
+    emailSetting(workflows[key]);
 
-  return Object.fromEntries(
-    Object.values(WORKFLOW_KEYS).map((key) => [
-      key,
-      emailSetting(workflows[key]),
-    ])
-  ) as EmailPreferences;
+  return {
+    [WORKFLOW_KEYS.refundRequestDecided]: setting(
+      WORKFLOW_KEYS.refundRequestDecided
+    ),
+    [WORKFLOW_KEYS.replyReceived]: setting(WORKFLOW_KEYS.replyReceived),
+    [WORKFLOW_KEYS.newLessonAnnounced]: setting(
+      WORKFLOW_KEYS.newLessonAnnounced
+    ),
+    [WORKFLOW_KEYS.questionAsked]: setting(WORKFLOW_KEYS.questionAsked),
+    [WORKFLOW_KEYS.refundRequestOpened]: setting(
+      WORKFLOW_KEYS.refundRequestOpened
+    ),
+    [WORKFLOW_KEYS.seatClaimed]: setting(WORKFLOW_KEYS.seatClaimed),
+  };
 }
 
 // An absent key comes back absent, not false, so an untouched Type reads as on.

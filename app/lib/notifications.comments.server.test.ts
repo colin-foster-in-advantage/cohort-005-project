@@ -124,6 +124,20 @@ describe("a reply", () => {
       idempotencyKey: `reply:${reply.id}`,
     });
   });
+
+  it("omits the excerpt key entirely when nothing a person typed survives", async () => {
+    const { transport, calls } = recordingTransport();
+    const question = postComment(base.user.id, null, "Why does this re-render?");
+    const reply = postComment(
+      base.instructor.id,
+      question.id,
+      "```ts\nconst memo = useMemo(fn, []);\n```"
+    );
+
+    await notifyOnComment(db, reply.id, transport);
+
+    expect(calls[0]!.data).not.toHaveProperty("excerpt");
+  });
 });
 
 describe("notifying nobody", () => {

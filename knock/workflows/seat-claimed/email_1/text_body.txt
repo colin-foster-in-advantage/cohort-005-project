@@ -1,1 +1,1 @@
-Open the course: {{ data.action_url }}
+Open the team page: {{ data.action_url }}
