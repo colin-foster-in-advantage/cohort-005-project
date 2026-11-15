@@ -109,11 +109,13 @@ const navItems: NavItem[] = [
   },
 ];
 
-// The unread count is Knock's, read straight from its store. Cadence keeps no
-// count of its own, so the badge can briefly lead the list — which is correct:
-// something did arrive. The sidebar never says whether live updates are down.
+// The badge is Knock's unseen count, read straight from its store: it answers
+// "is there anything new?", so opening the drawer clears it while the rows it
+// counted stay bold. Cadence keeps no count of its own, so the badge can
+// briefly lead the list — which is correct: something did arrive. The sidebar
+// never says whether live updates are down.
 function NotificationsNavItem() {
-  const { unreadCount, openDrawer } = useNotificationFeed();
+  const { unseenCount, openDrawer } = useNotificationFeed();
 
   return (
     <button
@@ -123,9 +125,9 @@ function NotificationsNavItem() {
     >
       <Bell className="size-4" />
       Notifications
-      {unreadCount > 0 && (
+      {unseenCount > 0 && (
         <span className="ml-auto min-w-5 rounded-full bg-primary px-1.5 py-0.5 text-center text-xs font-semibold text-primary-foreground">
-          {unreadCount > 99 ? "99+" : unreadCount}
+          {unseenCount > 99 ? "99+" : unseenCount}
         </span>
       )}
     </button>
