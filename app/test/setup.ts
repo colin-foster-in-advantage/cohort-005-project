@@ -5,6 +5,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import * as schema from "~/db/schema";
 import type {
+  KnockPreferenceSet,
   NotificationChannels,
   NotificationRecipient,
   NotificationTransport,
@@ -100,25 +101,51 @@ export type RecordedPreference = {
   channels: NotificationChannels;
 };
 
+/** What a recorded call was, in the order the calls were made. */
+export type RecordedCallKind =
+  | "trigger"
+  | "identify"
+  | "read-preferences"
+  | "set-preference";
+
 /**
  * A transport that records what it was asked to send instead of sending it.
+ * `preferenceSet` stands in for what Knock would return from the merged read.
  */
-export function recordingTransport(): {
+export function recordingTransport(options?: {
+  preferenceSet?: KnockPreferenceSet;
+}): {
   transport: NotificationTransport;
   calls: RecordedTrigger[];
+  identified: NotificationRecipient[];
   preferences: RecordedPreference[];
+  sequence: RecordedCallKind[];
 } {
   const calls: RecordedTrigger[] = [];
+  const identified: NotificationRecipient[] = [];
   const preferences: RecordedPreference[] = [];
+  const sequence: RecordedCallKind[] = [];
 
   return {
     calls,
+    identified,
     preferences,
+    sequence,
     transport: {
       async trigger(key, { recipients, data, idempotencyKey }) {
+        sequence.push("trigger");
         calls.push({ key, recipients, data, idempotencyKey });
       },
+      async identify(recipient) {
+        sequence.push("identify");
+        identified.push(recipient);
+      },
+      async getPreferences() {
+        sequence.push("read-preferences");
+        return options?.preferenceSet ?? {};
+      },
       async setPreference(knockUserId, workflowKey, channels) {
+        sequence.push("set-preference");
         preferences.push({ knockUserId, workflowKey, channels });
       },
     },
@@ -134,5 +161,10 @@ export function throwingTransport(): NotificationTransport {
     throw new Error("Knock is unreachable");
   };
 
-  return { trigger: fail, setPreference: fail };
+  return {
+    trigger: fail,
+    identify: fail,
+    getPreferences: fail,
+    setPreference: fail,
+  };
 }

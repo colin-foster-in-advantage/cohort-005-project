@@ -1,4 +1,4 @@
-import { useRef, useEffect } from "react";
+import { useRef, useEffect, useState } from "react";
 import { useFetcher } from "react-router";
 import { toast } from "sonner";
 import { z } from "zod";
@@ -10,6 +10,7 @@ import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import { Textarea } from "~/components/ui/textarea";
+import { Switch } from "~/components/ui/switch";
 import { UserRole, RefundStatus, users } from "~/db/schema";
 import { AlertTriangle } from "lucide-react";
 import { data, isRouteErrorResponse, Link } from "react-router";
@@ -17,11 +18,40 @@ import { db } from "~/db";
 import { eq } from "drizzle-orm";
 import { formatPrice } from "~/lib/utils";
 import { listRefundRequestsForBuyer } from "~/lib/refunds.server";
+import {
+  readEmailPreferences,
+  setEmailPreference,
+  knockUserId,
+  WORKFLOW_KEYS,
+  type NotificationWorkflowKey,
+} from "~/lib/notifications.server";
+import {
+  listEmailPreferenceRows,
+  type EmailPreferenceRow,
+} from "~/lib/notification-preferences.server";
 
-const settingsSchema = z.object({
-  name: z.string().trim().min(1, "Name cannot be empty."),
-  bio: z.string().trim().optional(),
-});
+const WORKFLOW_KEY_VALUES = Object.values(WORKFLOW_KEYS) as [
+  NotificationWorkflowKey,
+  ...NotificationWorkflowKey[],
+];
+
+// One action, two intents: the profile form and a single preference flip.
+const settingsSchema = z.discriminatedUnion("intent", [
+  z.object({
+    intent: z.literal("update-profile"),
+    name: z.string().trim().min(1, "Name cannot be empty."),
+    bio: z.string().trim().optional(),
+  }),
+  z.object({
+    intent: z.literal("set-email-preference"),
+    workflowKey: z.enum(WORKFLOW_KEY_VALUES),
+    enabled: z.enum(["true", "false"]).transform((value) => value === "true"),
+  }),
+]);
+
+type EmailPreferenceCard =
+  | { status: "ok"; rows: EmailPreferenceRow[] }
+  | { status: "unavailable" };
 
 export function meta() {
   return [
@@ -51,6 +81,22 @@ export async function loader({ request }: Route.LoaderArgs) {
 
   const refundRequests = listRefundRequestsForBuyer(db, currentUserId);
 
+  // The loader identifies before it reads: the preference GET 404s for a user
+  // Knock has never seen, which is everyone who hasn't yet been notified.
+  // A failed read says so rather than guessing a switch position, and the rest
+  // of /settings still works.
+  let emailPreferences: EmailPreferenceCard;
+  try {
+    const preferences = await readEmailPreferences(currentUser);
+    emailPreferences = {
+      status: "ok",
+      rows: listEmailPreferenceRows(db, currentUser, preferences),
+    };
+  } catch (error) {
+    console.error("Could not read notification preferences from Knock", error);
+    emailPreferences = { status: "unavailable" };
+  }
+
   return {
     user: {
       id: currentUser.id,
@@ -60,6 +106,7 @@ export async function loader({ request }: Route.LoaderArgs) {
       role: currentUser.role,
     },
     refundRequests,
+    emailPreferences,
   };
 }
 
@@ -86,6 +133,28 @@ export async function action({ request }: Route.ActionArgs) {
     return data({ errors: parsed.errors }, { status: 400 });
   }
 
+  if (parsed.data.intent === "set-email-preference") {
+    const { workflowKey, enabled } = parsed.data;
+
+    // One switch, one key, one call — never a read-then-write, and no Save
+    // button to batch six untransacted calls behind. This throws when Knock
+    // rejects it, which is what reverts the switch in the browser.
+    try {
+      await setEmailPreference(knockUserId(currentUser), workflowKey, enabled);
+    } catch (error) {
+      console.error(`Could not write the ${workflowKey} preference`, error);
+      return data(
+        {
+          ok: false as const,
+          error: "We could not save that preference. Please try again.",
+        },
+        { status: 502 }
+      );
+    }
+
+    return { ok: true as const };
+  }
+
   const { name, bio } = parsed.data;
 
   db
@@ -94,11 +163,11 @@ export async function action({ request }: Route.ActionArgs) {
     .where(eq(users.id, currentUser.id))
     .returning()
     .get();
-  return { success: true };
+  return { success: true as const };
 }
 
 export default function Settings({ loaderData }: Route.ComponentProps) {
-  const { user, refundRequests } = loaderData;
+  const { user, refundRequests, emailPreferences } = loaderData;
   const openCount = refundRequests.filter(
     (refundRequest) => refundRequest.status === RefundStatus.Open
   ).length;
@@ -106,11 +175,14 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
   const nameInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (fetcher.state === "idle" && fetcher.data?.success) {
+    if (fetcher.state !== "idle" || !fetcher.data) return;
+    if ("success" in fetcher.data) {
       toast.success("Profile updated successfully.");
     }
-    if (fetcher.state === "idle" && fetcher.data?.errors) {
-      const firstError = Object.values(fetcher.data.errors)[0] as string | undefined;
+    if ("errors" in fetcher.data) {
+      const firstError = Object.values(fetcher.data.errors)[0] as
+        | string
+        | undefined;
       if (firstError) toast.error(firstError);
     }
   }, [fetcher.state, fetcher.data]);
@@ -139,6 +211,7 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
         </CardHeader>
         <CardContent>
           <fetcher.Form method="post" className="space-y-4">
+            <input type="hidden" name="intent" value="update-profile" />
             <div className="space-y-2">
               <Label htmlFor="name">Name</Label>
               <Input
@@ -235,6 +308,84 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
           </CardContent>
         </Card>
       )}
+
+      <EmailNotificationsCard emailPreferences={emailPreferences} />
+    </div>
+  );
+}
+
+function EmailNotificationsCard({
+  emailPreferences,
+}: {
+  emailPreferences: EmailPreferenceCard;
+}) {
+  return (
+    <Card className="mt-8 max-w-md">
+      <CardHeader>
+        <h2 className="text-lg font-semibold">Email notifications</h2>
+        <p className="text-sm text-muted-foreground">
+          Choose which emails we send you. Everything still arrives in your
+          notification feed.
+        </p>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {emailPreferences.status === "unavailable" ? (
+          <p className="text-sm text-muted-foreground">
+            Preferences are temporarily unavailable.
+          </p>
+        ) : (
+          emailPreferences.rows.map((row) => (
+            <EmailPreferenceSwitch key={row.workflowKey} row={row} />
+          ))
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function EmailPreferenceSwitch({ row }: { row: EmailPreferenceRow }) {
+  const fetcher = useFetcher<typeof action>();
+  const [enabled, setEnabled] = useState(row.enabled);
+  // What to go back to when Knock rejects the write: a switch that flips in the
+  // UI and never lands means believing you muted a Type that keeps emailing.
+  const previous = useRef(row.enabled);
+
+  useEffect(() => {
+    setEnabled(row.enabled);
+    previous.current = row.enabled;
+  }, [row.enabled]);
+
+  useEffect(() => {
+    if (fetcher.state !== "idle" || !fetcher.data) return;
+    if ("ok" in fetcher.data && fetcher.data.ok === false) {
+      setEnabled(previous.current);
+      toast.error(fetcher.data.error);
+    }
+  }, [fetcher.state, fetcher.data]);
+
+  const switchId = `email-${row.workflowKey}`;
+
+  return (
+    <div className="flex items-center justify-between gap-4">
+      <Label htmlFor={switchId} className="font-normal">
+        {row.label}
+      </Label>
+      <Switch
+        id={switchId}
+        checked={enabled}
+        onCheckedChange={(next) => {
+          previous.current = enabled;
+          setEnabled(next);
+          fetcher.submit(
+            {
+              intent: "set-email-preference",
+              workflowKey: row.workflowKey,
+              enabled: String(next),
+            },
+            { method: "post" }
+          );
+        }}
+      />
     </div>
   );
 }
