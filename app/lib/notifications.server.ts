@@ -1,9 +1,19 @@
-import { eq } from "drizzle-orm";
+import { and, eq, ne } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import Knock from "@knocklabs/node";
 import { marked, type Token } from "marked";
 import * as schema from "~/db/schema";
-import { comments, courses, lessons, modules, users, UserRole } from "~/db/schema";
+import {
+  comments,
+  coupons,
+  courses,
+  lessons,
+  modules,
+  teamMembers,
+  TeamMemberRole,
+  users,
+  UserRole,
+} from "~/db/schema";
 
 // ─── Notifications ───
 // Every Knock call except the live feed goes through this module. A Notification
@@ -311,8 +321,10 @@ export async function setEmailPreference(
   await transport.setPreference(knockUserId, workflowKey, { email: enabled });
 }
 
-// ─── Comment triggers ───
-// Shape decides the Notification Type, not the poster's role: parentId === null
+// ─── Triggers ───
+
+// Comment triggers: shape decides the Notification Type, not the poster's role:
+// parentId === null
 // is a Question Asked for the course's instructor, anything else is a Reply
 // Received for the parent comment's author. Both comment routes call this one
 // function, so neither can pick the wrong Type.
@@ -438,4 +450,87 @@ function parentAuthorId(db: Queryable, parentId: number): number | null {
 
 function userById(db: Queryable, userId: number): UserRow | undefined {
   return db.select().from(users).where(eq(users.id, userId)).get();
+}
+
+/** The team page: every Seat Claimed Notification points here. */
+const TEAM_PAGE_URL = "/team";
+
+/**
+ * Tells the Team Admins of the team that bought the Team Licence that one of
+ * their Seats has been claimed. It takes the coupon id and resolves everything
+ * else, so the redeem action stays a one-liner.
+ *
+ * Recipients come from `team_members`, not from `purchases`: the two coincide
+ * at purchase but diverge after, and the membership survives a refunded
+ * licence. The claimer never hears about their own action, which for a team
+ * whose only admin is the claimer means nobody is told at all — an empty
+ * recipient list is a 422 at Knock, so we return before the transport.
+ *
+ * Like every trigger it cannot throw: the redemption has already committed.
+ */
+export async function notifySeatClaimed(
+  db: Queryable,
+  couponId: number,
+  transport: NotificationTransport = defaultTransport()
+): Promise<void> {
+  const idempotencyKey = `${WORKFLOW_KEYS.seatClaimed}:${couponId}`;
+  let recipientCount = 0;
+
+  try {
+    const coupon = db
+      .select()
+      .from(coupons)
+      .where(eq(coupons.id, couponId))
+      .get();
+    const claimerId = coupon?.redeemedByUserId;
+    if (!coupon || claimerId === null || claimerId === undefined) return;
+
+    const claimer = db
+      .select()
+      .from(users)
+      .where(eq(users.id, claimerId))
+      .get();
+    const course = db
+      .select()
+      .from(courses)
+      .where(eq(courses.id, coupon.courseId))
+      .get();
+    if (!claimer || !course) return;
+
+    const recipients = db
+      .select({ id: users.id, email: users.email, name: users.name })
+      .from(teamMembers)
+      .innerJoin(users, eq(users.id, teamMembers.userId))
+      .where(
+        and(
+          eq(teamMembers.teamId, coupon.teamId),
+          eq(teamMembers.role, TeamMemberRole.Admin),
+          ne(users.id, claimerId)
+        )
+      )
+      .all()
+      .map(notificationRecipient);
+
+    recipientCount = recipients.length;
+    if (recipientCount === 0) return;
+
+    await triggerNotification(
+      WORKFLOW_KEYS.seatClaimed,
+      {
+        recipients,
+        data: {
+          actor_name: claimer.name,
+          course_title: cappedName(course.title),
+          action_url: TEAM_PAGE_URL,
+        },
+        idempotencyKey,
+      },
+      transport
+    );
+  } catch (error) {
+    console.error(
+      `${WORKFLOW_KEYS.seatClaimed} failed for ${recipientCount} recipient(s) (${idempotencyKey})`,
+      error
+    );
+  }
 }
