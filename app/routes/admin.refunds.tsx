@@ -21,7 +21,7 @@ import {
   type RefundRequestForReview,
 } from "~/lib/refunds.server";
 import { RULE_BREAK_LABELS } from "~/lib/refund-rules";
-import { sendEmail } from "~/lib/mailer.server";
+import { notifyRefundRequestDecided } from "~/lib/notifications.server";
 
 const refundFilterSchema = z
   .nativeEnum(RefundStatus)
@@ -127,7 +127,8 @@ export async function action({ request }: Route.ActionArgs) {
     return data({ error: result.error }, { status: result.status });
   }
 
-  await sendEmail(result.email);
+  // The transaction has committed; the trigger swallows its own failures.
+  await notifyRefundRequestDecided(db, refundRequestId);
 
   return {
     success: true,

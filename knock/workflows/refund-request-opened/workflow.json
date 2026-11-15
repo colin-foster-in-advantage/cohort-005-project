@@ -38,7 +38,7 @@
         ]
       },
       "template": {
-        "subject": "{{ data.actor_name }} requested a refund for “{{ data.course_title }}”",
+        "subject": "{{ data.actor_name }} requested a refund for {{ data.course_title }}",
         "html_body@": "email_1/html_body.html",
         "text_body@": "email_1/text_body.txt",
         "settings": {
