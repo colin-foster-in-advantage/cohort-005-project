@@ -7,6 +7,7 @@ import { courses, purchases } from "~/db/schema";
 import { eq } from "drizzle-orm";
 import { parseFormData, parseParams } from "~/lib/validation";
 import { raiseRefundRequest } from "~/lib/refunds.server";
+import { notifyRefundRequestOpened } from "~/lib/notifications.server";
 import { sendEmail } from "~/lib/mailer.server";
 
 const refundParamsSchema = z.object({
@@ -72,6 +73,9 @@ export async function action({ params, request }: Route.ActionArgs) {
     throw data(result.error, { status: result.status });
   }
 
+  // The Notification goes first: it cannot throw, so it can never skip the
+  // Acknowledgement, while a throwing sendEmail would skip it.
+  await notifyRefundRequestOpened(db, result.refundRequestId);
   await sendEmail(result.email);
 
   return redirect(result.kind === "team_licence" ? "/team" : "/settings");

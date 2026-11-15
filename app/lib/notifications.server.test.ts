@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import * as schema from "~/db/schema";
-import { UserRole } from "~/db/schema";
+import { RefundStatus, UserRole } from "~/db/schema";
 import {
   createTestDb,
   recordingTransport,
@@ -17,6 +17,8 @@ import {
   setEmailPreference,
   triggerNotification,
   WORKFLOW_KEYS,
+  notifyRefundRequestDecided,
+  notifyRefundRequestOpened,
 } from "./notifications.server";
 
 describe("excerpt", () => {
@@ -264,5 +266,268 @@ describe("setEmailPreference", () => {
         throwingTransport()
       )
     ).rejects.toThrow();
+  });
+});
+
+// ─── Refund triggers ───
+
+type TestDb = ReturnType<typeof createTestDb>;
+
+function seedRefundWorld() {
+  const db = createTestDb();
+  const base = seedBaseData(db);
+
+  const platformAdmin = db
+    .insert(schema.users)
+    .values({
+      name: "Pat Admin",
+      email: "pat@example.com",
+      role: UserRole.Admin,
+    })
+    .returning()
+    .get();
+
+  return { db, base, platformAdmin };
+}
+
+function buy(db: TestDb, userId: number, courseId: number, amountPaid = 7900) {
+  return db
+    .insert(schema.purchases)
+    .values({ userId, courseId, amountPaid })
+    .returning()
+    .get();
+}
+
+function openRefundRequest(db: TestDb, purchaseId: number, reason: string) {
+  return db
+    .insert(schema.refunds)
+    .values({ purchaseId, status: RefundStatus.Open, reason })
+    .returning()
+    .get();
+}
+
+describe("notifying that a Refund Request was opened", () => {
+  it("tells every Platform Admin, with the buyer as a payload name only", async () => {
+    const { db, base, platformAdmin } = seedRefundWorld();
+    const purchase = buy(db, base.user.id, base.course.id);
+    const refundRequest = openRefundRequest(
+      db,
+      purchase.id,
+      "I bought the **wrong** course."
+    );
+    const { transport, calls } = recordingTransport();
+
+    await notifyRefundRequestOpened(db, refundRequest.id, transport);
+
+    expect(calls).toEqual([
+      {
+        key: "refund-request-opened",
+        recipients: [
+          {
+            id: `user_${platformAdmin.id}`,
+            email: "pat@example.com",
+            name: "Pat Admin",
+          },
+        ],
+        data: {
+          actor_name: "Test User",
+          course_title: "Test Course",
+          excerpt: "I bought the wrong course.",
+          action_url: "/admin/refunds",
+        },
+        idempotencyKey: `refund-opened:${refundRequest.id}`,
+      },
+    ]);
+  });
+
+  it("returns early when there is no Platform Admin to tell", async () => {
+    const db = createTestDb();
+    const base = seedBaseData(db);
+    const purchase = buy(db, base.user.id, base.course.id);
+    const refundRequest = openRefundRequest(db, purchase.id, "Wrong course.");
+    const { transport, calls } = recordingTransport();
+
+    await notifyRefundRequestOpened(db, refundRequest.id, transport);
+
+    expect(calls).toEqual([]);
+  });
+
+  it("swallows a Knock failure, leaving the Refund Request open", async () => {
+    const { db, base } = seedRefundWorld();
+    const purchase = buy(db, base.user.id, base.course.id);
+    const refundRequest = openRefundRequest(db, purchase.id, "Wrong course.");
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(
+      notifyRefundRequestOpened(db, refundRequest.id, throwingTransport())
+    ).resolves.toBeUndefined();
+
+    expect(logged).toHaveBeenCalledWith(
+      expect.stringContaining(`refund-opened:${refundRequest.id}`),
+      expect.any(Error)
+    );
+    logged.mockRestore();
+  });
+});
+
+describe("notifying that a Refund Request was decided", () => {
+  function decide(
+    db: TestDb,
+    refundRequestId: number,
+    status: RefundStatus.Approved | RefundStatus.Declined,
+    decisionNote: string | null
+  ) {
+    db.update(schema.refunds)
+      .set({ status, decisionNote, resolvedAt: new Date().toISOString() })
+      .where(eq(schema.refunds.id, refundRequestId))
+      .run();
+  }
+
+  it("tells the buyer of an Individual Purchase what was decided", async () => {
+    const { db, base } = seedRefundWorld();
+    const purchase = buy(db, base.user.id, base.course.id);
+    const refundRequest = openRefundRequest(db, purchase.id, "Wrong course.");
+    decide(db, refundRequest.id, RefundStatus.Approved, "Refunded in full.");
+    const { transport, calls } = recordingTransport();
+
+    await notifyRefundRequestDecided(db, refundRequest.id, transport);
+
+    expect(calls).toEqual([
+      {
+        key: "refund-request-decided",
+        recipients: [
+          {
+            id: `user_${base.user.id}`,
+            email: "test@example.com",
+            name: "Test User",
+          },
+        ],
+        data: {
+          course_title: "Test Course",
+          decision: "approved",
+          amount: "$79.00",
+          excerpt: "Refunded in full.",
+          action_url: `/courses/${base.course.slug}`,
+        },
+        idempotencyKey: `refund-decided:${refundRequest.id}`,
+      },
+    ]);
+  });
+
+  it("sends no actor at all, so the deciding Platform Admin stays in Cadence", async () => {
+    const { db, base, platformAdmin } = seedRefundWorld();
+    const purchase = buy(db, base.user.id, base.course.id);
+    const refundRequest = openRefundRequest(db, purchase.id, "Wrong course.");
+    db.update(schema.refunds)
+      .set({
+        status: RefundStatus.Declined,
+        decisionNote: "You finished the course.",
+        resolvedByUserId: platformAdmin.id,
+        resolvedAt: new Date().toISOString(),
+      })
+      .where(eq(schema.refunds.id, refundRequest.id))
+      .run();
+    const { transport, calls } = recordingTransport();
+
+    await notifyRefundRequestDecided(db, refundRequest.id, transport);
+
+    const call = calls[0]!;
+    expect(call).not.toHaveProperty("actors");
+    expect(call.data).not.toHaveProperty("actor_name");
+    expect(JSON.stringify(call)).not.toContain(platformAdmin.name);
+  });
+
+  it("carries a decline's note as the excerpt", async () => {
+    const { db, base } = seedRefundWorld();
+    const purchase = buy(db, base.user.id, base.course.id);
+    const refundRequest = openRefundRequest(db, purchase.id, "Wrong course.");
+    decide(
+      db,
+      refundRequest.id,
+      RefundStatus.Declined,
+      "You finished the course."
+    );
+    const { transport, calls } = recordingTransport();
+
+    await notifyRefundRequestDecided(db, refundRequest.id, transport);
+
+    expect(calls[0]!.data).toMatchObject({
+      decision: "declined",
+      excerpt: "You finished the course.",
+    });
+  });
+
+  it("omits the excerpt when an approval carries no note", async () => {
+    const { db, base } = seedRefundWorld();
+    const purchase = buy(db, base.user.id, base.course.id);
+    const refundRequest = openRefundRequest(db, purchase.id, "Wrong course.");
+    decide(db, refundRequest.id, RefundStatus.Approved, null);
+    const { transport, calls } = recordingTransport();
+
+    await notifyRefundRequestDecided(db, refundRequest.id, transport);
+
+    expect(calls[0]!.data).not.toHaveProperty("excerpt");
+  });
+
+  it("tells the Team Admin who bought a Team Licence, not a seat holder", async () => {
+    const { db, base } = seedRefundWorld();
+    const teamAdmin = db
+      .insert(schema.users)
+      .values({
+        name: "Priya Buyer",
+        email: "priya@example.com",
+        role: UserRole.Student,
+      })
+      .returning()
+      .get();
+    const team = db.insert(schema.teams).values({}).returning().get();
+    const purchase = buy(db, teamAdmin.id, base.course.id, 24000);
+    db.insert(schema.coupons)
+      .values({
+        teamId: team.id,
+        courseId: base.course.id,
+        code: "SEAT-1",
+        purchaseId: purchase.id,
+      })
+      .run();
+    const refundRequest = openRefundRequest(db, purchase.id, "Too many seats.");
+    decide(db, refundRequest.id, RefundStatus.Approved, null);
+    const { transport, calls } = recordingTransport();
+
+    await notifyRefundRequestDecided(db, refundRequest.id, transport);
+
+    expect(calls[0]!.recipients).toEqual([
+      {
+        id: `user_${teamAdmin.id}`,
+        email: "priya@example.com",
+        name: "Priya Buyer",
+      },
+    ]);
+    expect(calls[0]!.data).toMatchObject({ amount: "$240.00" });
+  });
+
+  it("swallows a Knock failure, leaving the decision standing", async () => {
+    const { db, base } = seedRefundWorld();
+    const purchase = buy(db, base.user.id, base.course.id);
+    const refundRequest = openRefundRequest(db, purchase.id, "Wrong course.");
+    decide(db, refundRequest.id, RefundStatus.Approved, null);
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(
+      notifyRefundRequestDecided(db, refundRequest.id, throwingTransport())
+    ).resolves.toBeUndefined();
+
+    expect(logged).toHaveBeenCalledWith(
+      expect.stringContaining(`refund-decided:${refundRequest.id}`),
+      expect.any(Error)
+    );
+    expect(
+      db
+        .select()
+        .from(schema.refunds)
+        .where(eq(schema.refunds.id, refundRequest.id))
+        .get()!.status
+    ).toBe(RefundStatus.Approved);
+    logged.mockRestore();
   });
 });

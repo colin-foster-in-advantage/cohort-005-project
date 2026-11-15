@@ -2,6 +2,12 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 // ─── Transactional email ───
+// This module sends Acknowledgements only — the mail a person is owed for an
+// action they just took, which propagates when it fails. Everything in the
+// Notification catalogue goes through notifications.server.ts instead, where a
+// send is best-effort and a failure is swallowed. Do not add a caller here for
+// something a Notification should carry.
+//
 // Postmark delivers every email when POSTMARK_SERVER_TOKEN is set. Without a
 // token (local dev, tests) each message is written to .outbox/ as a JSON file
 // instead, so it can be read without sending anything.

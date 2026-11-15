@@ -9,17 +9,24 @@ import {
   courses,
   lessons,
   modules,
+  purchases,
+  refunds,
   teamMembers,
   TeamMemberRole,
   users,
+  RefundStatus,
   UserRole,
 } from "~/db/schema";
+import { formatPrice } from "~/lib/utils";
 
 // ─── Notifications ───
 // Every Knock call except the live feed goes through this module. A Notification
 // is best-effort (GLOSSARY.md): the triggers built on top of this never throw,
 // while a preference write always does — a person who flipped a switch must be
 // told when it didn't take.
+//
+// The reciprocal of mailer.server.ts, which sends Acknowledgements only: mail
+// a person is owed for their own action, which propagates when it fails.
 //
 // KNOCK_API_KEY is read once, here. Without it the default transport is a
 // logged no-op, so a fresh clone with no .env runs Cadence fully and no call
@@ -323,8 +330,152 @@ export async function setEmailPreference(
 
 // ─── Triggers ───
 
-// Comment triggers: shape decides the Notification Type, not the poster's role:
-// parentId === null
+// Refund triggers: both fire inline from a route action, after the write.
+// They swallow everything (docs/adr/0015): the Refund Request is already
+// inserted, the decision's transaction already committed, so a throw would be
+// a lie about work that is done.
+
+const ADMIN_REFUNDS_PATH = "/admin/refunds";
+
+type RefundContext = {
+  refundRequest: typeof refunds.$inferSelect;
+  purchase: typeof purchases.$inferSelect;
+  buyer: UserRow;
+  course: typeof courses.$inferSelect;
+};
+
+function refundContext(
+  db: Queryable,
+  refundRequestId: number
+): RefundContext | undefined {
+  const refundRequest = db
+    .select()
+    .from(refunds)
+    .where(eq(refunds.id, refundRequestId))
+    .get();
+  if (!refundRequest) return undefined;
+
+  const purchase = db
+    .select()
+    .from(purchases)
+    .where(eq(purchases.id, refundRequest.purchaseId))
+    .get();
+  if (!purchase) return undefined;
+
+  const buyer = db
+    .select()
+    .from(users)
+    .where(eq(users.id, purchase.userId))
+    .get();
+  const course = db
+    .select()
+    .from(courses)
+    .where(eq(courses.id, purchase.courseId))
+    .get();
+  if (!buyer || !course) return undefined;
+
+  return { refundRequest, purchase, buyer, course };
+}
+
+/**
+ * Tells every Platform Admin that a buyer opened a Refund Request. The
+ * fan-out has no claiming: whoever decides first wins, and the others'
+ * Notification points at an already-decided request.
+ */
+export async function notifyRefundRequestOpened(
+  db: Queryable,
+  refundRequestId: number,
+  transport: NotificationTransport = defaultTransport()
+): Promise<void> {
+  const context = refundContext(db, refundRequestId);
+  if (!context) return;
+
+  const recipients = platformAdminRecipients(db);
+  if (recipients.length === 0) return;
+
+  const reason = excerpt(context.refundRequest.reason);
+
+  await triggerQuietly(
+    WORKFLOW_KEYS.refundRequestOpened,
+    {
+      recipients,
+      data: {
+        actor_name: context.buyer.name,
+        course_title: cappedName(context.course.title),
+        ...(reason ? { excerpt: reason } : {}),
+        action_url: ADMIN_REFUNDS_PATH,
+      },
+      idempotencyKey: `refund-opened:${refundRequestId}`,
+    },
+    transport
+  );
+}
+
+/**
+ * Tells the buyer — the Student on an Individual Purchase, the Team Admin on a
+ * Team Licence — that their Refund Request was approved or declined. One
+ * workflow branching on `decision`, so nobody mutes one and keeps the other.
+ *
+ * Actor-less by design (PRD §5): no `actors[]` entry is sent, so the deciding
+ * Platform Admin's name never leaves Cadence. Suppressing it in a template
+ * would still leave it in the vendor's stored payload.
+ */
+export async function notifyRefundRequestDecided(
+  db: Queryable,
+  refundRequestId: number,
+  transport: NotificationTransport = defaultTransport()
+): Promise<void> {
+  const context = refundContext(db, refundRequestId);
+  if (!context) return;
+
+  const { refundRequest, purchase, buyer, course } = context;
+  if (
+    refundRequest.status !== RefundStatus.Approved &&
+    refundRequest.status !== RefundStatus.Declined
+  ) {
+    return;
+  }
+
+  // An approval's note is optional; a decline always carries one.
+  const note = refundRequest.decisionNote
+    ? excerpt(refundRequest.decisionNote)
+    : undefined;
+
+  await triggerQuietly(
+    WORKFLOW_KEYS.refundRequestDecided,
+    {
+      recipients: [notificationRecipient(buyer)],
+      data: {
+        course_title: cappedName(course.title),
+        decision: refundRequest.status,
+        amount: formatPrice(purchase.amountPaid),
+        ...(note ? { excerpt: note } : {}),
+        action_url: `/courses/${course.slug}`,
+      },
+      idempotencyKey: `refund-decided:${refundRequestId}`,
+    },
+    transport
+  );
+}
+
+/** Logs and returns: a Notification is best-effort, never owed. */
+async function triggerQuietly(
+  key: NotificationWorkflowKey,
+  request: NotificationTriggerRequest,
+  transport: NotificationTransport
+): Promise<void> {
+  try {
+    await triggerNotification(key, request, transport);
+  } catch (error) {
+    console.error(
+      `Notification ${key} failed for ${request.recipients.length} recipient(s) (${request.idempotencyKey})`,
+      error
+    );
+  }
+}
+
+// Comment triggers: shape decides the Notification Type, not the poster's
+// role: parentId === null
 // is a Question Asked for the course's instructor, anything else is a Reply
 // Received for the parent comment's author. Both comment routes call this one
 // function, so neither can pick the wrong Type.
