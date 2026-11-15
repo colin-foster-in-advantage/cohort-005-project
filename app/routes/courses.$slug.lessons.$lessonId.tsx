@@ -5,6 +5,7 @@ import type { Route } from "./+types/courses.$slug.lessons.$lessonId";
 import { getCurrentUserId } from "~/lib/session";
 import { getAccess, requireContentAccess } from "~/lib/access.server";
 import { renderComment } from "~/lib/comment-markdown.server";
+import { notifyOnComment } from "~/lib/notifications.server";
 import {
   CommentThread,
   type RenderedComment,
@@ -900,12 +901,13 @@ export async function action({ params, request }: Route.ActionArgs) {
         if (!parsed.success) {
           return { ok: false, error: "Enter a comment before posting." };
         }
-        createComment(
+        const comment = createComment(
           currentUserId,
           lessonId,
           parsed.data.parentId ?? null,
           parsed.data.body
         );
+        await notifyOnComment(db, comment.id);
         return { ok: true };
       }
 
