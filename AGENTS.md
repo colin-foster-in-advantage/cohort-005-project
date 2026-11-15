@@ -4,6 +4,7 @@ Do these checks in this order before you report a change to `app/` as complete:
 
 1. `npm run typecheck`
 2. `npm run test`
+3. Touched `knock/`? Run `npm run knock:check`.
 
 ## When something breaks
 

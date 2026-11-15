@@ -1,0 +1,7 @@
+Hi {{ recipient.name }},
+
+{{content}}
+
+— The Cadence team
+
+Manage notification preferences: {{ vars.app_url | default: "http://localhost:5173" }}/settings

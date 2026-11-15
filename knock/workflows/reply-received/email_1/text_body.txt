@@ -1,0 +1,3 @@
+{% if data.excerpt %}“{{ data.excerpt }}”
+
+{% endif %}See the lesson: {{ data.action_url }}

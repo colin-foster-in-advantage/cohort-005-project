@@ -33,3 +33,6 @@ reports/
 
 # Emails written locally instead of sent
 .outbox/
+
+# Temporary knock pull, written by npm run knock:check
+/.knock-check-*/

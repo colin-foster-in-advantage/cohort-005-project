@@ -1,0 +1,11 @@
+{
+  "preference_set": {
+    "workflows": {
+      "seat-claimed": {
+        "channel_types": {
+          "email": false
+        }
+      }
+    }
+  }
+}
