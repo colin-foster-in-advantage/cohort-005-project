@@ -36,6 +36,11 @@ import {
 import { data, isRouteErrorResponse } from "react-router";
 import { z } from "zod";
 import { parseFormData, parseParams } from "~/lib/validation";
+import {
+  AnnounceConfirmDialog,
+  enrolledStudentsPhrase,
+  lessonsPhrase,
+} from "~/components/announce-confirm-dialog";
 
 const instructorLessonParamsSchema = z.object({
   courseId: z.coerce.number().int(),
@@ -379,31 +384,14 @@ export default function InstructorLessonEditor({
 
       {/* Announce confirmation */}
       {confirmingAnnounce && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <Card className="mx-4 w-full max-w-md">
-            <CardHeader>
-              <h2 className="text-lg font-semibold">Announce this lesson?</h2>
-              <p className="text-sm text-muted-foreground">
-                Announce <strong>{lesson.title}</strong> to{" "}
-                {enrolledStudentCount} enrolled{" "}
-                {enrolledStudentCount === 1 ? "Student" : "Students"}? This
-                can&apos;t be undone.
-              </p>
-            </CardHeader>
-            <CardContent className="flex justify-end gap-3">
-              <Button
-                variant="outline"
-                onClick={() => setConfirmingAnnounce(false)}
-              >
-                Cancel
-              </Button>
-              <Button onClick={handleAnnounce}>
-                <Megaphone className="mr-1.5 size-4" />
-                Announce
-              </Button>
-            </CardContent>
-          </Card>
-        </div>
+        <AnnounceConfirmDialog
+          heading="Announce this lesson?"
+          onCancel={() => setConfirmingAnnounce(false)}
+          onConfirm={handleAnnounce}
+        >
+          Announce <strong>{lesson.title}</strong> to{" "}
+          {enrolledStudentsPhrase(enrolledStudentCount)}? This can&apos;t be undone.
+        </AnnounceConfirmDialog>
       )}
 
       {/* Breadcrumb */}

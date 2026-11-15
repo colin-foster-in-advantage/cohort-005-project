@@ -1,13 +1,17 @@
+import type { NotificationWorkflowKey } from "~/lib/notifications.server";
+
 // ─── The drawer's rows, as data ───
 // Everything the Feed drawer decides before it renders anything: which chip a
 // row wears, what its title and quoted detail line say, where clicking it goes,
 // whether it is bold, and which day heading it sits under. Isomorphic and
 // free of React, so every one of those decisions is assertable in node.
 
-/** Five chips for six Types: a chip is a glance-level category, not a Type. */
+/** Five chips for six Types: a chip is a glance-level category, not a Type.
+ * Keyed by the workflow key type, so a key renamed in WORKFLOW_KEYS is a type
+ * error here rather than a chip that silently stops appearing. */
 export type Chip = "Refund" | "Reply" | "Lesson" | "Question" | "Seats";
 
-const CHIPS: Record<string, Chip> = {
+const CHIPS: Record<NotificationWorkflowKey, Chip> = {
   "refund-request-decided": "Refund",
   "refund-request-opened": "Refund",
   "reply-received": "Reply",
@@ -16,9 +20,13 @@ const CHIPS: Record<string, Chip> = {
   "seat-claimed": "Seats",
 };
 
+function isCataloguedKey(key: string): key is NotificationWorkflowKey {
+  return Object.hasOwn(CHIPS, key);
+}
+
 /** The chip for a workflow key, or null for anything not in the catalogue. */
 export function chipFor(workflowKey: string): Chip | null {
-  return CHIPS[workflowKey] ?? null;
+  return isCataloguedKey(workflowKey) ? CHIPS[workflowKey] : null;
 }
 
 /**

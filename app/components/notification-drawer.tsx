@@ -48,7 +48,9 @@ export function NotificationDrawer() {
   // stay unread and bold. Held in a ref so this fires on the count changing and
   // not on every store update.
   const markAllAsSeenRef = useRef(markAllAsSeen);
-  markAllAsSeenRef.current = markAllAsSeen;
+  useEffect(() => {
+    markAllAsSeenRef.current = markAllAsSeen;
+  }, [markAllAsSeen]);
   const { unseenCount } = feed;
   useEffect(() => {
     if (isDrawerOpen && unseenCount > 0) markAllAsSeenRef.current();

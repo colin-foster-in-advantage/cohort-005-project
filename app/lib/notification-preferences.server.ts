@@ -1,11 +1,11 @@
 import { and, eq } from "drizzle-orm";
-import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
-import * as schema from "~/db/schema";
-import { teamMembers, TeamMemberRole, users, UserRole } from "~/db/schema";
+import { teamMembers, TeamMemberRole, UserRole } from "~/db/schema";
 import {
   WORKFLOW_KEYS,
   type EmailPreferences,
   type NotificationWorkflowKey,
+  type Queryable,
+  type UserRow,
 } from "./notifications.server";
 
 // ─── Which switches the "Email notifications" card renders ───
@@ -15,11 +15,6 @@ import {
 // rendering keeps its stored preference in Knock — there is no delete, and
 // re-promotion restores the old choice.
 
-type Db = BetterSQLite3Database<typeof schema>;
-type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
-type Queryable = Db | Tx;
-
-type UserRow = typeof users.$inferSelect;
 
 /** The Notification Type names, exactly as the Feed chips say them. */
 export const NOTIFICATION_TYPE_LABELS: Record<NotificationWorkflowKey, string> =

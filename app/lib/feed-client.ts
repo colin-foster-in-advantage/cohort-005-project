@@ -10,11 +10,6 @@ export type FeedRow = {
   read: boolean;
 };
 
-/** Why the feed is being re-read. Every one of these is a correctness re-read
- * except the ping, which is the optimisation. */
-export type FetchReason =
-  "socket-ping" | "became-visible" | "came-online" | "drawer-opened";
-
 export type ConnectionStatus = "connected" | "disconnected";
 
 export type FeedEvent =
@@ -31,7 +26,9 @@ export type FeedEvent =
   | { type: "user-switched"; knockUserId: string };
 
 export type FeedCommand =
-  | { type: "fetch-items"; reason: FetchReason }
+  // Every re-read is the same read: the reason it happened is the reducer's
+  // business and nothing performing the command has ever needed it.
+  | { type: "fetch-items" }
   | { type: "write-archive"; itemId: string }
   | { type: "teardown-socket"; knockUserId: string };
 
@@ -40,8 +37,6 @@ export const ARCHIVE_FAILED_MESSAGE =
 
 export type FeedClientState = {
   knockUserId: string;
-  pageVisible: boolean;
-  drawerOpen: boolean;
   /** Live updates are down. The sidebar stays silent about it; the drawer says so. */
   liveUpdatesDown: boolean;
   /** Rows hidden by an optimistic archive whose write is still in flight. */
@@ -54,8 +49,6 @@ export type FeedClientState = {
 export function initialFeedState(knockUserId: string): FeedClientState {
   return {
     knockUserId,
-    pageVisible: true,
-    drawerOpen: false,
     liveUpdatesDown: false,
     archiving: [],
     restoredItems: [],
@@ -80,31 +73,25 @@ export function feedReducer(
     case "socket-ping":
       return [
         { ...state, liveUpdatesDown: false },
-        [{ type: "fetch-items", reason: "socket-ping" }],
+        [{ type: "fetch-items" }],
       ];
 
     // Knock's socket drops 30s into a hidden tab and never catches up on
     // reconnect, so coming back is a re-read, not a reconnect.
     case "became-visible":
-      return [
-        { ...state, pageVisible: true },
-        [{ type: "fetch-items", reason: "became-visible" }],
-      ];
+      return [state, [{ type: "fetch-items" }]];
 
     case "became-hidden":
-      return [{ ...state, pageVisible: false }, []];
+      return [state, []];
 
     case "came-online":
-      return [state, [{ type: "fetch-items", reason: "came-online" }]];
+      return [state, [{ type: "fetch-items" }]];
 
     case "drawer-opened":
-      return [
-        { ...state, drawerOpen: true },
-        [{ type: "fetch-items", reason: "drawer-opened" }],
-      ];
+      return [state, [{ type: "fetch-items" }]];
 
     case "drawer-closed":
-      return [{ ...state, drawerOpen: false }, []];
+      return [state, []];
 
     // Archive removes a row from view, so the write is wrapped: it goes out
     // optimistically and a failure puts the row back exactly as it was.

@@ -31,9 +31,7 @@ export type KnockFeedConfig = {
 
 export type NotificationFeed = {
   items: FeedItem[];
-  unreadCount: number;
   unseenCount: number;
-  totalCount: number;
   hasMore: boolean;
   loading: boolean;
   /** Live updates are down. The sidebar says nothing; the drawer says so quietly. */
@@ -52,9 +50,7 @@ export type NotificationFeed = {
 
 const EMPTY_FEED: NotificationFeed = {
   items: [],
-  unreadCount: 0,
   unseenCount: 0,
-  totalCount: 0,
   hasMore: false,
   loading: false,
   liveUpdatesDown: false,
@@ -95,18 +91,14 @@ function step(machine: Machine, action: MachineAction): Machine {
 
 type StoreSnapshot = {
   items: FeedItem[];
-  unreadCount: number;
   unseenCount: number;
-  totalCount: number;
   hasMore: boolean;
   loading: boolean;
 };
 
 const EMPTY_SNAPSHOT: StoreSnapshot = {
   items: [],
-  unreadCount: 0,
   unseenCount: 0,
-  totalCount: 0,
   hasMore: false,
   loading: false,
 };
@@ -173,9 +165,7 @@ export function NotificationFeedProvider({
     const unsubscribe = feed.store.subscribe((state) => {
       setSnapshot({
         items: state.items,
-        unreadCount: state.metadata.unread_count,
         unseenCount: state.metadata.unseen_count,
-        totalCount: state.metadata.total_count,
         hasMore: state.pageInfo.after !== null,
         loading: state.loading,
       });
@@ -270,9 +260,7 @@ export function NotificationFeedProvider({
     const feed = () => sessionRef.current?.feed;
     return {
       items,
-      unreadCount: snapshot.unreadCount,
       unseenCount: snapshot.unseenCount,
-      totalCount: snapshot.totalCount,
       hasMore: snapshot.hasMore,
       loading: snapshot.loading,
       liveUpdatesDown: state.liveUpdatesDown,

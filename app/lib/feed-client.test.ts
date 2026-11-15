@@ -28,23 +28,20 @@ describe("correctness is ours, not the socket's", () => {
       { type: "became-visible" }
     );
 
-    expect(commands).toEqual([
-      { type: "fetch-items", reason: "became-visible" },
-    ]);
+    expect(commands).toEqual([{ type: "fetch-items" }]);
   });
 
   it("re-reads the feed on coming back online and on opening the drawer", () => {
-    const [state, commands] = run(
+    const [, commands] = run(
       initialFeedState("user_7"),
       { type: "came-online" },
       { type: "drawer-opened" }
     );
 
     expect(commands).toEqual([
-      { type: "fetch-items", reason: "came-online" },
-      { type: "fetch-items", reason: "drawer-opened" },
+      { type: "fetch-items" },
+      { type: "fetch-items" },
     ]);
-    expect(state.drawerOpen).toBe(true);
   });
 
   it("says live updates are down without ever saying so in the sidebar", () => {
@@ -146,7 +143,7 @@ describe("live delivery is a doorbell, not a delivery", () => {
       type: "socket-ping",
     });
 
-    expect(commands).toEqual([{ type: "fetch-items", reason: "socket-ping" }]);
+    expect(commands).toEqual([{ type: "fetch-items" }]);
     expect(state.archiving).toEqual([]);
     expect(state.restoredItems).toEqual([]);
   });

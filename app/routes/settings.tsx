@@ -22,18 +22,12 @@ import {
   readEmailPreferences,
   setEmailPreference,
   knockUserId,
-  WORKFLOW_KEYS,
-  type NotificationWorkflowKey,
+  isNotificationWorkflowKey,
 } from "~/lib/notifications.server";
 import {
   listEmailPreferenceRows,
   type EmailPreferenceRow,
 } from "~/lib/notification-preferences.server";
-
-const WORKFLOW_KEY_VALUES = Object.values(WORKFLOW_KEYS) as [
-  NotificationWorkflowKey,
-  ...NotificationWorkflowKey[],
-];
 
 // One action, two intents: the profile form and a single preference flip.
 const settingsSchema = z.discriminatedUnion("intent", [
@@ -44,7 +38,9 @@ const settingsSchema = z.discriminatedUnion("intent", [
   }),
   z.object({
     intent: z.literal("set-email-preference"),
-    workflowKey: z.enum(WORKFLOW_KEY_VALUES),
+    workflowKey: z
+      .string()
+      .refine(isNotificationWorkflowKey, "Unknown notification type."),
     enabled: z.enum(["true", "false"]).transform((value) => value === "true"),
   }),
 ]);
@@ -180,9 +176,9 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
       toast.success("Profile updated successfully.");
     }
     if ("errors" in fetcher.data) {
-      const firstError = Object.values(fetcher.data.errors)[0] as
-        | string
-        | undefined;
+      const firstError = Object.values(fetcher.data.errors).find(
+        (message): message is string => typeof message === "string"
+      );
       if (firstError) toast.error(firstError);
     }
   }, [fetcher.state, fetcher.data]);

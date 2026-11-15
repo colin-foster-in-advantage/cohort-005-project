@@ -64,6 +64,11 @@ import {
 import { data, isRouteErrorResponse } from "react-router";
 import { z } from "zod";
 import { parseFormData, parseParams } from "~/lib/validation";
+import {
+  AnnounceConfirmDialog,
+  enrolledStudentsPhrase,
+  lessonsPhrase,
+} from "~/components/announce-confirm-dialog";
 
 function getUserById(id: number) {
   return db.select().from(users).where(eq(users.id, id)).get();
@@ -1772,43 +1777,21 @@ export default function InstructorCourseEditor({
 
       {/* Batch announce confirmation */}
       {confirmingAnnounce && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <Card className="mx-4 w-full max-w-md">
-            <CardHeader>
-              <h2 className="text-lg font-semibold">
-                Announce {announceableLessonCount}{" "}
-                {announceableLessonCount === 1 ? "lesson" : "lessons"}?
-              </h2>
-              <p className="text-sm text-muted-foreground">
-                Announce {announceableLessonCount}{" "}
-                {announceableLessonCount === 1 ? "lesson" : "lessons"} to{" "}
-                {enrolledStudentCount} enrolled{" "}
-                {enrolledStudentCount === 1 ? "Student" : "Students"}? Each
-                lesson gets its own notification. This can&apos;t be undone.
-              </p>
-            </CardHeader>
-            <CardContent className="flex justify-end gap-3">
-              <Button
-                variant="outline"
-                onClick={() => setConfirmingAnnounce(false)}
-              >
-                Cancel
-              </Button>
-              <Button
-                onClick={() => {
-                  setConfirmingAnnounce(false);
-                  announceFetcher.submit(
-                    { intent: "announce-lessons" },
-                    { method: "post" }
-                  );
-                }}
-              >
-                <Megaphone className="mr-1.5 size-4" />
-                Announce
-              </Button>
-            </CardContent>
-          </Card>
-        </div>
+        <AnnounceConfirmDialog
+          heading={`Announce ${lessonsPhrase(announceableLessonCount)}?`}
+          onCancel={() => setConfirmingAnnounce(false)}
+          onConfirm={() => {
+            setConfirmingAnnounce(false);
+            announceFetcher.submit(
+              { intent: "announce-lessons" },
+              { method: "post" }
+            );
+          }}
+        >
+          Announce {lessonsPhrase(announceableLessonCount)} to{" "}
+          {enrolledStudentsPhrase(enrolledStudentCount)}? Each lesson gets its own
+          notification. This can&apos;t be undone.
+        </AnnounceConfirmDialog>
       )}
 
       {/* Tabs */}
