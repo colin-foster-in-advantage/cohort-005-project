@@ -1,10 +1,15 @@
 import { Outlet } from "react-router";
 import type { Route } from "./+types/layout.app";
 import { Sidebar } from "~/components/sidebar";
+import {
+  NotificationFeedProvider,
+  type KnockFeedConfig,
+} from "~/components/notification-feed";
 import { DevUI } from "~/components/dev-ui";
 import { Toaster } from "sonner";
 import { getCurrentUserId, getDevCountry } from "~/lib/session";
 import { getCountryTierInfo, COUNTRIES } from "~/lib/ppp";
+import { knockUserId } from "~/lib/notifications.server";
 import { eq, and, or, sql, desc } from "drizzle-orm";
 import { db } from "~/db";
 import {
@@ -171,6 +176,28 @@ function getRecentlyProgressedCourses(userId: number, limit: number = 3) {
     .all();
 }
 
+/**
+ * The three values the browser needs to read the Feed itself. No loader in
+ * Cadence calls Knock — the feed channel id is the channel's UUID, not its
+ * `knock` key — and the public key travels as loader data rather than a
+ * VITE_-prefixed build-time variable, so it lives only in .env and no rebuild
+ * is needed to change environment.
+ */
+function knockFeedConfig(
+  currentUser: { id: number } | null | undefined
+): KnockFeedConfig | null {
+  const publicApiKey = process.env.KNOCK_PUBLIC_API_KEY;
+  const feedChannelId = process.env.KNOCK_FEED_CHANNEL_ID;
+
+  if (!currentUser || !publicApiKey || !feedChannelId) return null;
+
+  return {
+    publicApiKey,
+    feedChannelId,
+    knockUserId: knockUserId(currentUser),
+  };
+}
+
 export async function loader({ request }: Route.LoaderArgs) {
   const users = getAllUsers();
   const currentUserId = await getCurrentUserId(request);
@@ -185,7 +212,11 @@ export async function loader({ request }: Route.LoaderArgs) {
           course.courseId
         );
         const totalLessons = getTotalLessonCount(course.courseId);
-        const progress = calculateProgress(currentUserId, course.courseId, false);
+        const progress = calculateProgress(
+          currentUserId,
+          course.courseId,
+          false
+        );
         return {
           courseId: course.courseId,
           title: course.courseTitle,
@@ -199,6 +230,7 @@ export async function loader({ request }: Route.LoaderArgs) {
     : [];
 
   return {
+    knock: knockFeedConfig(currentUser),
     users: users.map((u) => ({ id: u.id, name: u.name, role: u.role })),
     currentUser: currentUser
       ? {
@@ -218,6 +250,7 @@ export async function loader({ request }: Route.LoaderArgs) {
 
 export default function AppLayout({ loaderData }: Route.ComponentProps) {
   const {
+    knock,
     users,
     currentUser,
     recentCourses,
@@ -228,23 +261,25 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
   } = loaderData;
 
   return (
-    <div className="flex h-screen overflow-hidden">
-      <Sidebar
-        currentUser={currentUser}
-        recentCourses={recentCourses}
-        isTeamAdmin={userIsTeamAdmin}
-      />
-      <main className="flex-1 overflow-y-auto">
-        <Outlet />
-      </main>
-      <DevUI
-        users={users}
-        currentUser={currentUser}
-        devCountry={devCountry}
-        countryTierInfo={countryTierInfo}
-        countries={countries}
-      />
-      <Toaster position="bottom-right" richColors closeButton />
-    </div>
+    <NotificationFeedProvider knock={knock}>
+      <div className="flex h-screen overflow-hidden">
+        <Sidebar
+          currentUser={currentUser}
+          recentCourses={recentCourses}
+          isTeamAdmin={userIsTeamAdmin}
+        />
+        <main className="flex-1 overflow-y-auto">
+          <Outlet />
+        </main>
+        <DevUI
+          users={users}
+          currentUser={currentUser}
+          devCountry={devCountry}
+          countryTierInfo={countryTierInfo}
+          countries={countries}
+        />
+        <Toaster position="bottom-right" richColors closeButton />
+      </div>
+    </NotificationFeedProvider>
   );
 }
