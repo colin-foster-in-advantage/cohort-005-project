@@ -1,0 +1,50 @@
+{
+  "name": "Reply received",
+  "key": "reply-received",
+  "categories": [],
+  "steps": [
+    {
+      "type": "channel",
+      "ref": "in_app_feed_1",
+      "channel_key": "knock",
+      "channel_type": "in_app_feed",
+      "template": {
+        "markdown_body@": "in_app_feed_1/markdown_body.md",
+        "action_url": "{{ data.action_url }}"
+      }
+    },
+    {
+      "type": "delay",
+      "ref": "delay_1",
+      "settings": {
+        "delay_for": {
+          "unit": "minutes",
+          "value": 5
+        }
+      }
+    },
+    {
+      "type": "channel",
+      "ref": "email_1",
+      "channel_key": "email",
+      "channel_type": "email",
+      "conditions": {
+        "all": [
+          {
+            "variable": "refs.in_app_feed_1.engagement_status",
+            "operator": "not_contains",
+            "argument": "$message.seen"
+          }
+        ]
+      },
+      "template": {
+        "subject": "{{ data.actor_name }} replied to your comment on “{{ data.lesson_title }}”",
+        "html_body@": "email_1/html_body.html",
+        "text_body@": "email_1/text_body.txt",
+        "settings": {
+          "layout_key": "cadence"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+<html>
+  <body>
+    <p>Hi {{ recipient.name }},</p>
+    {{content}}
+    <p>— The Cadence team</p>
+    <p>
+      <a href="{{ vars.app_url | default: 'http://localhost:5173' }}/settings"
+        >Manage notification preferences</a
+      >
+    </p>
+  </body>
+</html>
