@@ -14,6 +14,7 @@ import {
   notificationRecipient,
   platformAdminRecipients,
   quotedName,
+  readEmailPreferences,
   setEmailPreference,
   triggerNotification,
   WORKFLOW_KEYS,
@@ -608,6 +609,10 @@ describe("announcing a lesson", () => {
       async trigger() {
         observed.push(getLesson(lessonId)?.announcedAt);
       },
+      async identify() {},
+      async getPreferences() {
+        return {};
+      },
       async setPreference() {},
     };
 
@@ -815,5 +820,68 @@ describe("announceable lessons", () => {
     });
 
     expect(announceableLessons(db, base.course.id)).toEqual([]);
+  });
+});
+
+describe("readEmailPreferences", () => {
+  it("identifies the user before reading, so the read never 404s on a stranger", async () => {
+    const { transport, sequence, identified } = recordingTransport();
+
+    await readEmailPreferences(
+      { id: 4, email: "ada@example.com", name: "Ada" },
+      transport
+    );
+
+    expect(sequence).toEqual(["identify", "read-preferences"]);
+    expect(identified).toEqual([
+      { id: "user_4", email: "ada@example.com", name: "Ada" },
+    ]);
+  });
+
+  it("reads an absent key as on — an absent key comes back absent, not false", async () => {
+    const { transport } = recordingTransport({
+      preferenceSet: {
+        workflows: {
+          "seat-claimed": { channel_types: { email: false } },
+        },
+      },
+    });
+
+    const preferences = await readEmailPreferences(
+      { id: 4, email: "ada@example.com", name: "Ada" },
+      transport
+    );
+
+    expect(preferences).toEqual({
+      "refund-request-decided": true,
+      "reply-received": true,
+      "new-lesson-announced": true,
+      "question-asked": true,
+      "refund-request-opened": true,
+      "seat-claimed": false,
+    });
+  });
+
+  it("reads a workflow stored as a bare boolean", async () => {
+    const { transport } = recordingTransport({
+      preferenceSet: { workflows: { "question-asked": false } },
+    });
+
+    const preferences = await readEmailPreferences(
+      { id: 4, email: "ada@example.com", name: "Ada" },
+      transport
+    );
+
+    expect(preferences["question-asked"]).toBe(false);
+    expect(preferences["reply-received"]).toBe(true);
+  });
+
+  it("throws when Knock is unreachable, so the card can say so", async () => {
+    await expect(
+      readEmailPreferences(
+        { id: 4, email: "ada@example.com", name: "Ada" },
+        throwingTransport()
+      )
+    ).rejects.toThrow();
   });
 });

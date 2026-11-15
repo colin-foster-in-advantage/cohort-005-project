@@ -212,11 +212,29 @@ export type NotificationChannels = {
   email: boolean;
 };
 
+/**
+ * The merged preference set Knock returns: the user's own keys with the
+ * environment defaults showing through the gaps. Every field may be absent or
+ * null, and a workflow entry may be a bare boolean — hence `email ?? true`.
+ */
+export type KnockWorkflowPreference =
+  | boolean
+  // A channel setting is a boolean, or an object of conditions — which Cadence
+  // never writes but a dashboard edit could leave behind.
+  | { channel_types?: { email?: unknown } | null }
+  | null;
+
+export type KnockPreferenceSet = {
+  workflows?: Record<string, KnockWorkflowPreference> | null;
+};
+
 export type NotificationTransport = {
   trigger(
     key: NotificationWorkflowKey,
     request: NotificationTriggerRequest
   ): Promise<void>;
+  identify(recipient: NotificationRecipient): Promise<void>;
+  getPreferences(knockUserId: string): Promise<KnockPreferenceSet>;
   setPreference(
     knockUserId: string,
     workflowKey: NotificationWorkflowKey,
@@ -244,6 +262,12 @@ export function knockTransport(apiKey: string): NotificationTransport {
         { recipients, data },
         { idempotencyKey }
       );
+    },
+    async identify({ id, email, name }) {
+      await client.users.update(id, { email, name });
+    },
+    async getPreferences(knockUserId) {
+      return await client.users.getPreferences(knockUserId, "default");
     },
     async setPreference(knockUserId, workflowKey, channels) {
       // The per-workflow PUT, which merges and so leaves sibling workflow keys
@@ -280,6 +304,15 @@ export function noopTransport(): NotificationTransport {
       console.warn(
         `KNOCK_API_KEY is not set: skipped ${key} for ${recipients.length} recipient(s)`
       );
+    },
+    async identify({ id }) {
+      console.warn(`KNOCK_API_KEY is not set: skipped identifying ${id}`);
+    },
+    async getPreferences(knockUserId) {
+      console.warn(
+        `KNOCK_API_KEY is not set: no stored preferences for ${knockUserId}`
+      );
+      return {};
     },
     async setPreference(knockUserId, workflowKey) {
       console.warn(
@@ -912,4 +945,55 @@ export async function notifySeatClaimed(
       error
     );
   }
+}
+
+/**
+ * Upserts the person in Knock. Every send already identifies its recipients
+ * inline, so this exists for one reason: the preference GET 404s for a user
+ * Knock has never seen, and a preference write against an unknown id mints a
+ * stub user with no email, silently killing the opt-in it just recorded.
+ */
+export async function identifyRecipient(
+  user: Pick<UserRow, "id" | "email" | "name">,
+  transport: NotificationTransport = defaultTransport()
+): Promise<void> {
+  await transport.identify(notificationRecipient(user));
+}
+
+/** One boolean per Notification Type: is email on for this person? */
+export type EmailPreferences = Record<NotificationWorkflowKey, boolean>;
+
+/**
+ * The merged set, read for rendering only — Knock resolves preferences itself
+ * at send time, so nothing in Cadence reads one to decide whether to send.
+ *
+ * It identifies first, in one function, so the no-read-and-no-write-without-
+ * identify rule is structural rather than something a caller must remember.
+ * Like a preference write and unlike a trigger, it throws: the card says
+ * "temporarily unavailable" rather than guessing a switch position.
+ */
+export async function readEmailPreferences(
+  user: Pick<UserRow, "id" | "email" | "name">,
+  transport: NotificationTransport = defaultTransport()
+): Promise<EmailPreferences> {
+  await identifyRecipient(user, transport);
+
+  const preferenceSet = await transport.getPreferences(knockUserId(user));
+  const workflows = preferenceSet.workflows ?? {};
+
+  return Object.fromEntries(
+    Object.values(WORKFLOW_KEYS).map((key) => [
+      key,
+      emailSetting(workflows[key]),
+    ])
+  ) as EmailPreferences;
+}
+
+// An absent key comes back absent, not false, so an untouched Type reads as on.
+function emailSetting(workflow: KnockWorkflowPreference | undefined): boolean {
+  if (workflow === null || workflow === undefined) return true;
+  if (typeof workflow === "boolean") return workflow;
+
+  const email = workflow.channel_types?.email;
+  return typeof email === "boolean" ? email : true;
 }
