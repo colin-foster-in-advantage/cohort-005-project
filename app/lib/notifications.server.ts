@@ -4,7 +4,10 @@ import Knock from "@knocklabs/node";
 import { marked, type Token } from "marked";
 import * as schema from "~/db/schema";
 import {
+  comments,
   courses,
+  lessons,
+  modules,
   purchases,
   refunds,
   users,
@@ -113,14 +116,24 @@ export function excerpt(body: string): string | undefined {
 }
 
 /**
+ * A course or lesson name as a Notification payload carries it: flattened and
+ * capped at 60 characters on a word boundary. CSS clamps the Feed title; an
+ * email subject has no CSS, so the cap is in the payload. The curly quotes
+ * around it live in the Liquid template.
+ */
+export function cappedName(name: string): string {
+  const flattened = name.replace(/\s+/g, " ").trim();
+  return truncateOnWordBoundary(flattened, NAME_MAX_LENGTH);
+}
+
+/**
  * A course or lesson name as it appears in Notification copy: flattened,
  * capped at 60 characters on a word boundary, in curly double quotes. CSS
  * clamps the Feed title; an email subject has no CSS, so the cap is in the
  * payload.
  */
 export function quotedName(name: string): string {
-  const flattened = name.replace(/\s+/g, " ").trim();
-  return `“${truncateOnWordBoundary(flattened, NAME_MAX_LENGTH)}”`;
+  return `“${cappedName(name)}”`;
 }
 
 function flattenToPlainText(markdown: string): string {
@@ -384,7 +397,7 @@ export async function notifyRefundRequestOpened(
       recipients,
       data: {
         actor_name: context.buyer.name,
-        course_title: quotedName(context.course.title),
+        course_title: cappedName(context.course.title),
         ...(reason ? { excerpt: reason } : {}),
         action_url: ADMIN_REFUNDS_PATH,
       },
@@ -429,7 +442,7 @@ export async function notifyRefundRequestDecided(
     {
       recipients: [notificationRecipient(buyer)],
       data: {
-        course_title: quotedName(course.title),
+        course_title: cappedName(course.title),
         decision: refundRequest.status,
         amount: formatPrice(purchase.amountPaid),
         ...(note ? { excerpt: note } : {}),
@@ -455,4 +468,133 @@ async function triggerQuietly(
       error
     );
   }
+}
+
+// ─── Comment triggers ───
+// Shape decides the Notification Type, not the poster's role: parentId === null
+// is a Question Asked for the course's instructor, anything else is a Reply
+// Received for the parent comment's author. Both comment routes call this one
+// function, so neither can pick the wrong Type.
+
+type CommentNotification = {
+  key: NotificationWorkflowKey;
+  request: NotificationTriggerRequest;
+};
+
+/**
+ * Fires the Notification a newly written comment owes, if it owes one.
+ *
+ * It takes the comment's id and does its own recipient lookup — Question Asked
+ * walks lessonId → moduleId → courseId → instructorId — so the call site is a
+ * one-liner it cannot get wrong.
+ *
+ * It is structurally incapable of throwing. The comment action turns any thrown
+ * Error into { ok: false, error: error.message }, so a Knock timeout would
+ * otherwise render "fetch failed" in the comment form's error box under a
+ * comment that saved perfectly.
+ */
+export async function notifyOnComment(
+  db: Queryable,
+  commentId: number,
+  transport: NotificationTransport = defaultTransport()
+): Promise<void> {
+  let planned: CommentNotification | null = null;
+
+  try {
+    planned = planCommentNotification(db, commentId);
+    if (!planned) return;
+
+    await triggerNotification(planned.key, planned.request, transport);
+  } catch (error) {
+    const key = planned?.key ?? "a comment notification";
+    const count = planned?.request.recipients.length ?? 0;
+    const idempotencyKey = planned?.request.idempotencyKey ?? `(none)`;
+    console.error(
+      `Knock trigger ${key} failed for ${count} recipient(s), idempotency key ${idempotencyKey}:`,
+      error
+    );
+  }
+}
+
+/**
+ * Picks the Type, the recipient and the payload for one comment. Returns null
+ * when there is nobody to tell — a self-reply, an instructor commenting on
+ * their own course — because an empty recipients array is a 422 from Knock, a
+ * logged error for a non-event.
+ */
+function planCommentNotification(
+  db: Queryable,
+  commentId: number
+): CommentNotification | null {
+  const comment = db
+    .select()
+    .from(comments)
+    .where(eq(comments.id, commentId))
+    .get();
+  if (!comment) return null;
+
+  const destination = db
+    .select({
+      lessonTitle: lessons.title,
+      courseSlug: courses.slug,
+      instructorId: courses.instructorId,
+    })
+    .from(lessons)
+    .innerJoin(modules, eq(lessons.moduleId, modules.id))
+    .innerJoin(courses, eq(modules.courseId, courses.id))
+    .where(eq(lessons.id, comment.lessonId))
+    .get();
+  if (!destination) return null;
+
+  const actor = userById(db, comment.userId);
+  if (!actor) return null;
+
+  // A reply is owed to the parent's author only, never also to the instructor.
+  const recipientId =
+    comment.parentId === null
+      ? destination.instructorId
+      : parentAuthorId(db, comment.parentId);
+  if (recipientId === null) return null;
+
+  // Never your own action.
+  if (recipientId === actor.id) return null;
+
+  const recipient = userById(db, recipientId);
+  if (!recipient) return null;
+
+  const topLevel = comment.parentId === null;
+
+  return {
+    key: topLevel ? WORKFLOW_KEYS.questionAsked : WORKFLOW_KEYS.replyReceived,
+    request: {
+      // Full recipient objects, never bare ids: Knock upserts each as part of
+      // the send, so the data is fresh at the only moment that matters.
+      recipients: [notificationRecipient(recipient)],
+      // The actor is a payload string and nothing more — a structured actor
+      // would create a Knock user out of someone purely for having acted.
+      data: {
+        actor_name: actor.name,
+        lesson_title: cappedName(destination.lessonTitle),
+        excerpt: excerpt(comment.body),
+        action_url: `/courses/${destination.courseSlug}/lessons/${comment.lessonId}`,
+      },
+      // Derived from the causing row's primary key, never generated, so it is
+      // identical across the SDK's own retry of a timed-out 5xx.
+      idempotencyKey: topLevel ? `question:${commentId}` : `reply:${commentId}`,
+    },
+  };
+}
+
+function parentAuthorId(db: Queryable, parentId: number): number | null {
+  const parent = db
+    .select({ userId: comments.userId })
+    .from(comments)
+    .where(eq(comments.id, parentId))
+    .get();
+
+  return parent?.userId ?? null;
+}
+
+function userById(db: Queryable, userId: number): UserRow | undefined {
+  return db.select().from(users).where(eq(users.id, userId)).get();
 }

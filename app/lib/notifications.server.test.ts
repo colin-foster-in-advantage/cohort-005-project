@@ -331,7 +331,7 @@ describe("notifying that a Refund Request was opened", () => {
         ],
         data: {
           actor_name: "Test User",
-          course_title: "“Test Course”",
+          course_title: "Test Course",
           excerpt: "I bought the wrong course.",
           action_url: "/admin/refunds",
         },
@@ -403,7 +403,7 @@ describe("notifying that a Refund Request was decided", () => {
           },
         ],
         data: {
-          course_title: "“Test Course”",
+          course_title: "Test Course",
           decision: "approved",
           amount: "$79.00",
           excerpt: "Refunded in full.",
