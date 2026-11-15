@@ -1,4 +1,4 @@
-import { and, eq, ne } from "drizzle-orm";
+import { and, eq, isNull, ne } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import Knock from "@knocklabs/node";
 import { marked, type Token } from "marked";
@@ -7,6 +7,8 @@ import {
   comments,
   coupons,
   courses,
+  CourseStatus,
+  enrollments,
   lessons,
   modules,
   purchases,
@@ -472,6 +474,232 @@ async function triggerQuietly(
       error
     );
   }
+}
+
+// New Lesson Announced: the one Notification a human presses a button for, and so the one that can
+// be pressed twice: lessons.announcedAt is the double-send guard.
+
+export const ANNOUNCE_CHUNK_SIZE = 1_000;
+
+type LessonRow = typeof lessons.$inferSelect;
+
+/**
+ * Every Student holding an Enrollment on the course right now, completed
+ * Enrollments included — a finished course gaining a lesson is exactly what a
+ * past Student wants. The announcing Instructor is never their own recipient.
+ */
+export function enrolledStudentRecipients(
+  db: Queryable,
+  courseId: number,
+  actorId: number
+): NotificationRecipient[] {
+  return db
+    .select({ id: users.id, email: users.email, name: users.name })
+    .from(enrollments)
+    .innerJoin(users, eq(users.id, enrollments.userId))
+    .where(and(eq(enrollments.courseId, courseId), ne(users.id, actorId)))
+    .all()
+    .map(notificationRecipient);
+}
+
+/**
+ * The New Lesson Announced trigger. Alone among the triggers it reports back:
+ * announceLesson stamps announcedAt only when this returns true, so a Knock
+ * failure leaves the lesson announceable instead of silently burning it. Like
+ * every trigger it still never throws.
+ *
+ * Recipients are chunked at Knock's per-trigger cap of 1,000, with the chunk
+ * index on the idempotency key so a retried chunk dedupes against itself.
+ */
+export async function notifyNewLessonAnnounced(
+  db: Queryable,
+  lessonId: number,
+  instructorId: number,
+  transport: NotificationTransport = defaultTransport()
+): Promise<boolean> {
+  const idempotencyKey = `lesson-announced:${lessonId}`;
+
+  try {
+    const context = announceContext(db, lessonId);
+    if (!context) return false;
+
+    const { lesson, course } = context;
+    const recipients = enrolledStudentRecipients(db, course.id, instructorId);
+    // Nobody to tell is not a failure: the stamp records the act, not a
+    // delivery, and an empty recipients array is a 422 from Knock.
+    if (recipients.length === 0) return true;
+
+    const actor = db
+      .select()
+      .from(users)
+      .where(eq(users.id, instructorId))
+      .get();
+
+    const data = {
+      actor_name: actor?.name ?? "",
+      course_title: quotedName(course.title),
+      lesson_title: quotedName(lesson.title),
+      action_url: `/courses/${course.slug}/lessons/${lesson.id}`,
+    };
+
+    for (
+      let index = 0;
+      index * ANNOUNCE_CHUNK_SIZE < recipients.length;
+      index++
+    ) {
+      await triggerNotification(
+        WORKFLOW_KEYS.newLessonAnnounced,
+        {
+          recipients: recipients.slice(
+            index * ANNOUNCE_CHUNK_SIZE,
+            (index + 1) * ANNOUNCE_CHUNK_SIZE
+          ),
+          data,
+          idempotencyKey: `${idempotencyKey}:${index}`,
+        },
+        transport
+      );
+    }
+
+    return true;
+  } catch (error) {
+    console.error(
+      `${WORKFLOW_KEYS.newLessonAnnounced} failed (${idempotencyKey})`,
+      error
+    );
+    return false;
+  }
+}
+
+function announceContext(db: Queryable, lessonId: number) {
+  const lesson = db
+    .select()
+    .from(lessons)
+    .where(eq(lessons.id, lessonId))
+    .get();
+  if (!lesson) return undefined;
+
+  const mod = db
+    .select()
+    .from(modules)
+    .where(eq(modules.id, lesson.moduleId))
+    .get();
+  if (!mod) return undefined;
+
+  const course = db
+    .select()
+    .from(courses)
+    .where(eq(courses.id, mod.courseId))
+    .get();
+  if (!course) return undefined;
+
+  return { lesson, module: mod, course };
+}
+
+/**
+ * A lesson with nothing in it reinstates the problem Announce solves, so
+ * emptiness is the guard: content or a video, one of the two.
+ */
+export function isLessonEmpty(
+  lesson: Pick<LessonRow, "content" | "videoUrl">
+): boolean {
+  return !lesson.content?.trim() && !lesson.videoUrl?.trim();
+}
+
+/**
+ * The lessons an Instructor could announce right now, across every module of
+ * the course, in reading order — the batch button's label and its loop.
+ */
+export function announceableLessons(
+  db: Queryable,
+  courseId: number
+): LessonRow[] {
+  return db
+    .select({ lesson: lessons })
+    .from(lessons)
+    .innerJoin(modules, eq(modules.id, lessons.moduleId))
+    .where(and(eq(modules.courseId, courseId), isNull(lessons.announcedAt)))
+    .orderBy(modules.position, lessons.position)
+    .all()
+    .map((row) => row.lesson)
+    .filter((lesson) => !isLessonEmpty(lesson));
+}
+
+export type AnnounceLessonResult =
+  | { ok: true; announcedAt: string }
+  | { ok: false; status: 403 | 404 | 409 | 502; error: string };
+
+/**
+ * Announce: trigger first, stamp second. The other order is a trap — a
+ * swallowed Knock timeout would leave the lesson permanently marked announced
+ * with nobody told and no way to retry.
+ */
+export async function announceLesson(
+  db: Queryable,
+  lessonId: number,
+  instructorId: number,
+  now: Date,
+  transport: NotificationTransport = defaultTransport()
+): Promise<AnnounceLessonResult> {
+  const context = announceContext(db, lessonId);
+  if (!context) {
+    return { ok: false, status: 404, error: "Lesson not found." };
+  }
+
+  const { lesson, course } = context;
+
+  // Owning Instructor only, checked here and not merely hidden in the UI: a
+  // Platform Admin cannot announce on an Instructor's behalf.
+  if (course.instructorId !== instructorId) {
+    return {
+      ok: false,
+      status: 403,
+      error: "You can only announce lessons on your own courses.",
+    };
+  }
+
+  if (course.status !== CourseStatus.Published) {
+    return {
+      ok: false,
+      status: 409,
+      error: "Publish the course before announcing its lessons.",
+    };
+  }
+
+  if (isLessonEmpty(lesson)) {
+    return {
+      ok: false,
+      status: 409,
+      error: "Add content or a video before announcing this lesson.",
+    };
+  }
+
+  if (lesson.announcedAt !== null) {
+    return {
+      ok: false,
+      status: 409,
+      error: "This lesson has already been announced.",
+    };
+  }
+
+  const sent = await notifyNewLessonAnnounced(
+    db,
+    lessonId,
+    instructorId,
+    transport
+  );
+  if (!sent) {
+    return {
+      ok: false,
+      status: 502,
+      error: "Couldn't reach the notification service. Try announcing again.",
+    };
+  }
+
+  const announcedAt = now.toISOString();
+  db.update(lessons).set({ announcedAt }).where(eq(lessons.id, lessonId)).run();
+
+  return { ok: true, announcedAt };
 }
 
 // Comment triggers: shape decides the Notification Type, not the poster's

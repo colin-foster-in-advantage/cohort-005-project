@@ -116,6 +116,9 @@ export const lessons = sqliteTable("lessons", {
   createdAt: text("created_at")
     .notNull()
     .$defaultFn(() => new Date().toISOString()),
+  // Null = never announced. Set once by the Instructor's Announce action and
+  // never cleared: this column is the double-send guard.
+  announcedAt: text("announced_at"),
 });
 
 export const enrollments = sqliteTable(

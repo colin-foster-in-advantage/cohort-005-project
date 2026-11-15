@@ -25,6 +25,11 @@ import {
 } from "~/db/schema";
 import { eq, and, or, sql, desc, gt, gte } from "drizzle-orm";
 import { formatDuration, formatPrice } from "~/lib/utils";
+import {
+  announceLesson,
+  announceableLessons,
+  enrolledStudentRecipients,
+} from "~/lib/notifications.server";
 import { MonacoMarkdownEditor } from "~/components/monaco-markdown-editor";
 import { Card, CardContent, CardHeader } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
@@ -54,6 +59,7 @@ import {
   Award,
   Globe,
   FileText,
+  Megaphone,
 } from "lucide-react";
 import { data, isRouteErrorResponse } from "react-router";
 import { z } from "zod";
@@ -536,6 +542,7 @@ const courseEditorActionSchema = z.discriminatedUnion("intent", [
     intent: z.literal("delete-lesson"),
     lessonId: z.coerce.number().int(),
   }),
+  z.object({ intent: z.literal("announce-lessons") }),
   z.object({
     intent: z.literal("update-sales-copy"),
     salesCopy: z.string().trim().min(1, "Sales copy cannot be empty."),
@@ -639,7 +646,28 @@ export async function loader({ params, request }: Route.LoaderArgs) {
 
   const quizCount = lessonQuizzes.length;
 
-  return { course, lessonCount, enrollmentCount, students, quizCount };
+  // The batch Announce button's label and its blast radius. Only the owning
+  // Instructor may announce, so an admin viewing the course never sees it.
+  const announceableLessonCount =
+    course.instructorId === currentUserId &&
+    course.status === CourseStatus.Published
+      ? announceableLessons(db, courseId).length
+      : 0;
+  const enrolledStudentCount = enrolledStudentRecipients(
+    db,
+    courseId,
+    currentUserId
+  ).length;
+
+  return {
+    course,
+    lessonCount,
+    enrollmentCount,
+    students,
+    quizCount,
+    announceableLessonCount,
+    enrolledStudentCount,
+  };
 }
 
 export async function action({ params, request }: Route.ActionArgs) {
@@ -839,6 +867,20 @@ export async function action({ params, request }: Route.ActionArgs) {
     }
     deleteLesson(lessonId);
     return { success: true, field: "lesson" };
+  }
+
+  if (intent === "announce-lessons") {
+    // Batch is UI convenience: the identical per-lesson announce, N times,
+    // each with its own stamp, Notification and destination.
+    const now = new Date();
+    let announced = 0;
+
+    for (const lesson of announceableLessons(db, courseId)) {
+      const result = await announceLesson(db, lesson.id, currentUserId, now);
+      if (result.ok) announced++;
+    }
+
+    return { success: true, field: "announce", announced };
   }
 
   if (intent === "update-sales-copy") {
@@ -1492,9 +1534,18 @@ function statusBadgeColor(status: string) {
 export default function InstructorCourseEditor({
   loaderData,
 }: Route.ComponentProps) {
-  const { course, lessonCount, enrollmentCount, students, quizCount } =
-    loaderData;
+  const {
+    course,
+    lessonCount,
+    enrollmentCount,
+    students,
+    quizCount,
+    announceableLessonCount,
+    enrolledStudentCount,
+  } = loaderData;
   const statusFetcher = useFetcher();
+  const announceFetcher = useFetcher();
+  const [confirmingAnnounce, setConfirmingAnnounce] = useState(false);
   const reorderFetcher = useFetcher();
   const lessonReorderFetcher = useFetcher();
   const salesCopyFetcher = useFetcher();
@@ -1504,6 +1555,18 @@ export default function InstructorCourseEditor({
   const [salesCopy, setSalesCopy] = useState(course.salesCopy);
   const salesCopyHasChanges = salesCopy !== course.salesCopy;
   const salesCopyIsEmpty = salesCopy.trim().length === 0;
+
+  useEffect(() => {
+    if (announceFetcher.state === "idle" && announceFetcher.data?.success) {
+      const announced = announceFetcher.data.announced ?? 0;
+      toast.success(
+        `Announced ${announced} ${announced === 1 ? "lesson" : "lessons"}.`
+      );
+    }
+    if (announceFetcher.state === "idle" && announceFetcher.data?.error) {
+      toast.error(announceFetcher.data.error);
+    }
+  }, [announceFetcher.state, announceFetcher.data]);
 
   useEffect(() => {
     if (statusFetcher.state === "idle" && statusFetcher.data?.success) {
@@ -1692,8 +1755,61 @@ export default function InstructorCourseEditor({
           <span className="text-xs text-muted-foreground">
             Slug: /courses/{course.slug}
           </span>
+          {announceableLessonCount > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setConfirmingAnnounce(true)}
+              disabled={announceFetcher.state !== "idle"}
+            >
+              <Megaphone className="mr-1.5 size-4" />
+              Announce {announceableLessonCount} new{" "}
+              {announceableLessonCount === 1 ? "lesson" : "lessons"}
+            </Button>
+          )}
         </div>
       </div>
+
+      {/* Batch announce confirmation */}
+      {confirmingAnnounce && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <Card className="mx-4 w-full max-w-md">
+            <CardHeader>
+              <h2 className="text-lg font-semibold">
+                Announce {announceableLessonCount}{" "}
+                {announceableLessonCount === 1 ? "lesson" : "lessons"}?
+              </h2>
+              <p className="text-sm text-muted-foreground">
+                Announce {announceableLessonCount}{" "}
+                {announceableLessonCount === 1 ? "lesson" : "lessons"} to{" "}
+                {enrolledStudentCount} enrolled{" "}
+                {enrolledStudentCount === 1 ? "Student" : "Students"}? Each
+                lesson gets its own notification. This can&apos;t be undone.
+              </p>
+            </CardHeader>
+            <CardContent className="flex justify-end gap-3">
+              <Button
+                variant="outline"
+                onClick={() => setConfirmingAnnounce(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={() => {
+                  setConfirmingAnnounce(false);
+                  announceFetcher.submit(
+                    { intent: "announce-lessons" },
+                    { method: "post" }
+                  );
+                }}
+              >
+                <Megaphone className="mr-1.5 size-4" />
+                Announce
+              </Button>
+            </CardContent>
+          </Card>
+        </div>
+      )}
 
       {/* Tabs */}
       <Tabs defaultValue="content">

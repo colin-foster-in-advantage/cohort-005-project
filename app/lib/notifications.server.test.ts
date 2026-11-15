@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import * as schema from "~/db/schema";
 import { RefundStatus, UserRole } from "~/db/schema";
@@ -19,6 +19,10 @@ import {
   WORKFLOW_KEYS,
   notifyRefundRequestDecided,
   notifyRefundRequestOpened,
+  announceLesson,
+  announceableLessons,
+  ANNOUNCE_CHUNK_SIZE,
+  type NotificationTransport,
 } from "./notifications.server";
 
 describe("excerpt", () => {
@@ -529,5 +533,287 @@ describe("notifying that a Refund Request was decided", () => {
         .get()!.status
     ).toBe(RefundStatus.Approved);
     logged.mockRestore();
+  });
+});
+
+describe("announcing a lesson", () => {
+  type TestDb = ReturnType<typeof createTestDb>;
+  const NOW = new Date("2026-03-04T10:00:00.000Z");
+
+  let db: TestDb;
+  let base: ReturnType<typeof seedBaseData>;
+  let lessonId: number;
+
+  function enrol(name: string, email: string) {
+    const student = db
+      .insert(schema.users)
+      .values({ name, email, role: UserRole.Student })
+      .returning()
+      .get();
+    db.insert(schema.enrollments)
+      .values({ userId: student.id, courseId: base.course.id })
+      .run();
+    return student;
+  }
+
+  function getLesson(id: number) {
+    return db
+      .select()
+      .from(schema.lessons)
+      .where(eq(schema.lessons.id, id))
+      .get();
+  }
+
+  beforeEach(() => {
+    db = createTestDb();
+    base = seedBaseData(db);
+
+    const mod = db
+      .insert(schema.modules)
+      .values({ courseId: base.course.id, title: "Module One", position: 1 })
+      .returning()
+      .get();
+
+    lessonId = db
+      .insert(schema.lessons)
+      .values({
+        moduleId: mod.id,
+        title: "Streams and buffers",
+        content: "Everything you need to know about streams.",
+        position: 1,
+      })
+      .returning()
+      .get().id;
+  });
+
+  it("notifies every Student enrolled at the moment of announcing", async () => {
+    const ada = enrol("Ada", "ada@example.com");
+    const grace = enrol("Grace", "grace@example.com");
+    const { transport, calls } = recordingTransport();
+
+    await announceLesson(db, lessonId, base.instructor.id, NOW, transport);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.key).toBe(WORKFLOW_KEYS.newLessonAnnounced);
+    expect(calls[0]!.recipients.map((r) => r.id)).toEqual([
+      `user_${ada.id}`,
+      `user_${grace.id}`,
+    ]);
+  });
+
+  it("stamps announcedAt only after the trigger reports success", async () => {
+    enrol("Ada", "ada@example.com");
+    const observed: (string | null | undefined)[] = [];
+    const transport: NotificationTransport = {
+      async trigger() {
+        observed.push(getLesson(lessonId)?.announcedAt);
+      },
+      async setPreference() {},
+    };
+
+    const result = await announceLesson(
+      db,
+      lessonId,
+      base.instructor.id,
+      NOW,
+      transport
+    );
+
+    expect(observed).toEqual([null]);
+    expect(result).toEqual({ ok: true, announcedAt: NOW.toISOString() });
+    expect(getLesson(lessonId)?.announcedAt).toBe(NOW.toISOString());
+  });
+
+  it("leaves announcedAt null when Knock is unreachable, so the Instructor can retry", async () => {
+    enrol("Ada", "ada@example.com");
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const result = await announceLesson(
+      db,
+      lessonId,
+      base.instructor.id,
+      NOW,
+      throwingTransport()
+    );
+
+    expect(result.ok).toBe(false);
+    expect(getLesson(lessonId)?.announcedAt).toBeNull();
+  });
+
+  it("stamps announcedAt for a course with no enrolled Students, without calling Knock", async () => {
+    const { transport, calls } = recordingTransport();
+
+    const result = await announceLesson(
+      db,
+      lessonId,
+      base.instructor.id,
+      NOW,
+      transport
+    );
+
+    expect(calls).toEqual([]);
+    expect(result.ok).toBe(true);
+    expect(getLesson(lessonId)?.announcedAt).toBe(NOW.toISOString());
+  });
+
+  it("refuses a second announce on the same lesson", async () => {
+    enrol("Ada", "ada@example.com");
+    const { transport, calls } = recordingTransport();
+    await announceLesson(db, lessonId, base.instructor.id, NOW, transport);
+
+    const result = await announceLesson(
+      db,
+      lessonId,
+      base.instructor.id,
+      new Date("2026-03-05T10:00:00.000Z"),
+      transport
+    );
+
+    expect(result).toMatchObject({ ok: false, status: 409 });
+    expect(calls).toHaveLength(1);
+    expect(getLesson(lessonId)?.announcedAt).toBe(NOW.toISOString());
+  });
+
+  it("rejects an announce from anyone but the owning Instructor, Platform Admins included", async () => {
+    enrol("Ada", "ada@example.com");
+    const admin = db
+      .insert(schema.users)
+      .values({
+        name: "Pat Admin",
+        email: "pat@example.com",
+        role: UserRole.Admin,
+      })
+      .returning()
+      .get();
+    const { transport, calls } = recordingTransport();
+
+    const result = await announceLesson(db, lessonId, admin.id, NOW, transport);
+
+    expect(result).toMatchObject({ ok: false, status: 403 });
+    expect(calls).toEqual([]);
+    expect(getLesson(lessonId)?.announcedAt).toBeNull();
+  });
+
+  it("refuses to announce a lesson on a course that isn't published", async () => {
+    enrol("Ada", "ada@example.com");
+    db.update(schema.courses)
+      .set({ status: schema.CourseStatus.Draft })
+      .where(eq(schema.courses.id, base.course.id))
+      .run();
+    const { transport, calls } = recordingTransport();
+
+    const result = await announceLesson(
+      db,
+      lessonId,
+      base.instructor.id,
+      NOW,
+      transport
+    );
+
+    expect(result).toMatchObject({ ok: false, status: 409 });
+    expect(calls).toEqual([]);
+    expect(getLesson(lessonId)?.announcedAt).toBeNull();
+  });
+
+  it("refuses to announce a lesson with neither content nor a video", async () => {
+    enrol("Ada", "ada@example.com");
+    db.update(schema.lessons)
+      .set({ content: "   ", videoUrl: null })
+      .where(eq(schema.lessons.id, lessonId))
+      .run();
+    const { transport, calls } = recordingTransport();
+
+    const result = await announceLesson(
+      db,
+      lessonId,
+      base.instructor.id,
+      NOW,
+      transport
+    );
+
+    expect(result).toMatchObject({ ok: false, status: 409 });
+    expect(calls).toEqual([]);
+    expect(getLesson(lessonId)?.announcedAt).toBeNull();
+  });
+
+  it("chunks recipients at a thousand, suffixing the chunk index onto the idempotency key", async () => {
+    for (let i = 0; i < ANNOUNCE_CHUNK_SIZE + 1; i++) {
+      enrol(`Student ${i}`, `student${i}@example.com`);
+    }
+    const { transport, calls } = recordingTransport();
+
+    await announceLesson(db, lessonId, base.instructor.id, NOW, transport);
+
+    expect(calls.map((call) => call.idempotencyKey)).toEqual([
+      `lesson-announced:${lessonId}:0`,
+      `lesson-announced:${lessonId}:1`,
+    ]);
+    expect(calls.map((call) => call.recipients.length)).toEqual([
+      ANNOUNCE_CHUNK_SIZE,
+      1,
+    ]);
+  });
+
+  it("carries the Instructor as Actor, with the lesson as the destination", async () => {
+    enrol("Ada", "ada@example.com");
+    const { transport, calls } = recordingTransport();
+
+    await announceLesson(db, lessonId, base.instructor.id, NOW, transport);
+
+    expect(calls[0]!.data).toEqual({
+      actor_name: "Test Instructor",
+      course_title: "“Test Course”",
+      lesson_title: "“Streams and buffers”",
+      action_url: `/courses/test-course/lessons/${lessonId}`,
+    });
+  });
+});
+
+describe("announceable lessons", () => {
+  type TestDb = ReturnType<typeof createTestDb>;
+
+  let db: TestDb;
+  let base: ReturnType<typeof seedBaseData>;
+  let moduleId: number;
+
+  function addLesson(
+    title: string,
+    values: Partial<typeof schema.lessons.$inferInsert> = {}
+  ) {
+    return db
+      .insert(schema.lessons)
+      .values({ moduleId, title, position: 1, ...values })
+      .returning()
+      .get();
+  }
+
+  beforeEach(() => {
+    db = createTestDb();
+    base = seedBaseData(db);
+    moduleId = db
+      .insert(schema.modules)
+      .values({ courseId: base.course.id, title: "Module One", position: 1 })
+      .returning()
+      .get().id;
+  });
+
+  it("counts an unannounced lesson with content and one with only a video", () => {
+    const written = addLesson("Written", { content: "Words." });
+    const filmed = addLesson("Filmed", { videoUrl: "https://youtu.be/abc" });
+
+    expect(announceableLessons(db, base.course.id).map((l) => l.id)).toEqual([
+      written.id,
+      filmed.id,
+    ]);
+  });
+
+  it("leaves out a stub and an already-announced lesson", () => {
+    addLesson("Stub", { content: "  " });
+    addLesson("Old news", {
+      content: "Words.",
+      announcedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    expect(announceableLessons(db, base.course.id)).toEqual([]);
   });
 });

@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import type { Route } from "./+types/instructor.$courseId.lessons.$lessonId";
 import { getCurrentUserId } from "~/lib/session";
 import {
+  CourseStatus,
   UserRole,
   users,
   courses,
@@ -11,6 +12,11 @@ import {
   lessons,
   quizzes,
 } from "~/db/schema";
+import {
+  announceLesson,
+  enrolledStudentRecipients,
+  isLessonEmpty,
+} from "~/lib/notifications.server";
 import { db } from "~/db";
 import { eq } from "drizzle-orm";
 import { Card, CardContent, CardHeader } from "~/components/ui/card";
@@ -24,6 +30,7 @@ import {
   ClipboardList,
   ExternalLink,
   Github,
+  Megaphone,
   Save,
 } from "lucide-react";
 import { data, isRouteErrorResponse } from "react-router";
@@ -35,13 +42,16 @@ const instructorLessonParamsSchema = z.object({
   lessonId: z.coerce.number().int(),
 });
 
-const updateLessonSchema = z.object({
-  intent: z.literal("update-lesson"),
-  content: z.string().optional(),
-  videoUrl: z.string().trim().optional(),
-  durationMinutes: z.string().optional(),
-  githubRepoUrl: z.string().trim().optional(),
-});
+const lessonEditorActionSchema = z.discriminatedUnion("intent", [
+  z.object({
+    intent: z.literal("update-lesson"),
+    content: z.string().optional(),
+    videoUrl: z.string().trim().optional(),
+    durationMinutes: z.string().optional(),
+    githubRepoUrl: z.string().trim().optional(),
+  }),
+  z.object({ intent: z.literal("announce-lesson") }),
+]);
 
 function getUserById(id: number) {
   return db.select().from(users).where(eq(users.id, id)).get();
@@ -150,7 +160,26 @@ export async function loader({ params, request }: Route.LoaderArgs) {
 
   const quiz = getQuizByLessonId(lessonId);
 
-  return { course, lesson, module: mod, quiz };
+  // The blast radius the confirmation dialog names, and the three standing
+  // conditions on Announce. The fourth guard — unsaved changes — is client
+  // state, and all four are re-checked in the action.
+  const enrolledStudentCount = enrolledStudentRecipients(
+    db,
+    course.id,
+    currentUserId
+  ).length;
+
+  return {
+    course,
+    lesson,
+    module: mod,
+    quiz,
+    enrolledStudentCount,
+    canAnnounce:
+      course.instructorId === currentUserId &&
+      course.status === CourseStatus.Published &&
+      !isLessonEmpty(lesson),
+  };
 }
 
 export async function action({ params, request }: Route.ActionArgs) {
@@ -195,7 +224,7 @@ export async function action({ params, request }: Route.ActionArgs) {
   }
 
   const formData = await request.formData();
-  const parsed = parseFormData(formData, updateLessonSchema);
+  const parsed = parseFormData(formData, lessonEditorActionSchema);
 
   if (!parsed.success) {
     return data(
@@ -234,14 +263,37 @@ export async function action({ params, request }: Route.ActionArgs) {
     return { success: true };
   }
 
+  if (parsed.data.intent === "announce-lesson") {
+    const result = await announceLesson(
+      db,
+      lessonId,
+      currentUserId,
+      new Date()
+    );
+
+    if (!result.ok) {
+      return data({ error: result.error }, { status: result.status });
+    }
+
+    return { success: true, announced: true };
+  }
+
   throw data("Invalid action.", { status: 400 });
 }
 
 export default function InstructorLessonEditor({
   loaderData,
 }: Route.ComponentProps) {
-  const { course, lesson, module: mod, quiz } = loaderData;
+  const {
+    course,
+    lesson,
+    module: mod,
+    quiz,
+    enrolledStudentCount,
+    canAnnounce,
+  } = loaderData;
   const fetcher = useFetcher();
+  const [confirmingAnnounce, setConfirmingAnnounce] = useState(false);
 
   const [content, setContent] = useState(lesson.content ?? "");
   const [videoUrl, setVideoUrl] = useState(lesson.videoUrl ?? "");
@@ -270,6 +322,10 @@ export default function InstructorLessonEditor({
   }, [hasChanges]);
 
   useEffect(() => {
+    if (fetcher.state === "idle" && fetcher.data?.announced) {
+      toast.success("Lesson announced.");
+      return;
+    }
     if (fetcher.state === "idle" && fetcher.data?.success) {
       toast.success("Lesson saved.");
     }
@@ -277,6 +333,11 @@ export default function InstructorLessonEditor({
       toast.error(fetcher.data.error);
     }
   }, [fetcher.state, fetcher.data]);
+
+  function handleAnnounce() {
+    setConfirmingAnnounce(false);
+    fetcher.submit({ intent: "announce-lesson" }, { method: "post" });
+  }
 
   function handleSave() {
     fetcher.submit(
@@ -310,6 +371,35 @@ export default function InstructorLessonEditor({
               </Button>
               <Button variant="destructive" onClick={() => blocker.proceed()}>
                 Leave Page
+              </Button>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* Announce confirmation */}
+      {confirmingAnnounce && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <Card className="mx-4 w-full max-w-md">
+            <CardHeader>
+              <h2 className="text-lg font-semibold">Announce this lesson?</h2>
+              <p className="text-sm text-muted-foreground">
+                Announce <strong>{lesson.title}</strong> to{" "}
+                {enrolledStudentCount} enrolled{" "}
+                {enrolledStudentCount === 1 ? "Student" : "Students"}? This
+                can&apos;t be undone.
+              </p>
+            </CardHeader>
+            <CardContent className="flex justify-end gap-3">
+              <Button
+                variant="outline"
+                onClick={() => setConfirmingAnnounce(false)}
+              >
+                Cancel
+              </Button>
+              <Button onClick={handleAnnounce}>
+                <Megaphone className="mr-1.5 size-4" />
+                Announce
               </Button>
             </CardContent>
           </Card>
@@ -467,6 +557,27 @@ export default function InstructorLessonEditor({
             <Save className="mr-1.5 size-4" />
             {fetcher.state !== "idle" ? "Saving..." : "Save Changes"}
           </Button>
+          {lesson.announcedAt ? (
+            <span className="text-sm text-muted-foreground">
+              Announced on{" "}
+              {new Date(lesson.announcedAt).toLocaleDateString("en-US", {
+                year: "numeric",
+                month: "short",
+                day: "numeric",
+              })}
+            </span>
+          ) : (
+            canAnnounce && (
+              <Button
+                variant="outline"
+                onClick={() => setConfirmingAnnounce(true)}
+                disabled={hasChanges || fetcher.state !== "idle"}
+              >
+                <Megaphone className="mr-1.5 size-4" />
+                Announce
+              </Button>
+            )
+          )}
           {hasChanges && (
             <span className="text-sm text-muted-foreground">
               You have unsaved changes.
