@@ -292,7 +292,11 @@ describe("announcing a lesson", () => {
   }
 
   function getLesson(id: number) {
-    return db.select().from(schema.lessons).where(eq(schema.lessons.id, id)).get();
+    return db
+      .select()
+      .from(schema.lessons)
+      .where(eq(schema.lessons.id, id))
+      .get();
   }
 
   beforeEach(() => {

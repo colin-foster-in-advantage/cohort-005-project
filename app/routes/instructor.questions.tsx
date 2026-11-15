@@ -5,6 +5,7 @@ import { z } from "zod";
 import type { Route } from "./+types/instructor.questions";
 import { requireInstructorOrAdmin, requireStaff } from "~/lib/access.server";
 import { renderComment } from "~/lib/comment-markdown.server";
+import { notifyOnComment } from "~/lib/notifications.server";
 import { Button } from "~/components/ui/button";
 import { Card, CardContent } from "~/components/ui/card";
 import { Skeleton } from "~/components/ui/skeleton";
@@ -208,12 +209,13 @@ export async function action({ request }: Route.ActionArgs) {
   const access = await requireStaff(request, course.courseId);
 
   try {
-    createComment(
+    const reply = createComment(
       access.userId!,
       question.lessonId,
       question.id,
       parsed.data.body
     );
+    await notifyOnComment(db, reply.id);
   } catch (error) {
     if (error instanceof Error) {
       return { ok: false, error: error.message };
