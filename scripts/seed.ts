@@ -334,6 +334,9 @@ async function seed() {
             position: li + 1,
             durationMinutes: lessonData.duration,
             createdAt: daysAgo(startDaysAgo - mi),
+            // seeded lessons are already out in the world, so none of them
+            // present an Announce button on a fresh database
+            announcedAt: daysAgo(startDaysAgo - mi),
           })
           .returning()
           .all();
