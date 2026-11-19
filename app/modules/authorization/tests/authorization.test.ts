@@ -337,6 +337,15 @@ describe("requireCanTakeCourse", () => {
     expect(access).toMatchObject({ userId: student.id, canViewContent: true });
   });
 
+  it("returns the signed-in user it proved may take the course", async () => {
+    enroll(student);
+    const { user } = await authz.requireCanTakeCourse(
+      await requestAs(student),
+      course.id
+    );
+    expect(user.name).toBe(student.name);
+  });
+
   it("throws 403 when a discounted Purchase is used from another country", async () => {
     makeCoursePaidWithPpp();
     enroll(student);

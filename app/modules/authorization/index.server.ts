@@ -58,9 +58,10 @@ export function createAuthorization(database: Db) {
     },
 
     /**
-     * Returns the course access when the user may take the course, or throws
-     * 401 signed out / 403 when they neither manage it nor have a PPP-unblocked
-     * Enrollment. Use in actions: loader guards don't protect actions.
+     * Returns the course access, with the signed-in user, when they may take
+     * the course, or throws 401 signed out / 403 when they neither manage it
+     * nor have a PPP-unblocked Enrollment. Use in actions: loader guards don't
+     * protect actions.
      */
     requireCanTakeCourse(request: Request, courseId: number) {
       return requireCanTakeCourse(database, request, courseId);

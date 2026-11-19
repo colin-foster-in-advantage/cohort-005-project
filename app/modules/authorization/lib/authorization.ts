@@ -205,18 +205,22 @@ export async function getCourseAccess(
   };
 }
 
+/** Course access for a signed-in user who may take the course. */
+export type CourseTakerAccess = CourseAccess & { userId: number; user: User };
+
 export async function requireCanTakeCourse(
   db: Db,
   request: Request,
   courseId: number
-): Promise<CourseAccess> {
+): Promise<CourseTakerAccess> {
   const access = await getCourseAccess(db, request, courseId);
+  const { userId, user } = access;
 
-  if (!access.userId) throw signedOut();
+  if (userId === null || !user) throw signedOut();
 
   if (!access.canViewContent) {
     throw data("You must be enrolled in this course.", { status: 403 });
   }
 
-  return access;
+  return { ...access, userId, user };
 }
