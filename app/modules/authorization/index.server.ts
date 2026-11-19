@@ -1,5 +1,7 @@
 import { db } from "~/db";
 import {
+  getCourseAccess,
+  requireCanTakeCourse,
   requireInstructor,
   requireInstructorOrPlatformAdmin,
   requireManagesCourse,
@@ -8,7 +10,7 @@ import {
   type Db,
 } from "./lib/authorization";
 
-export type { Course, User } from "./lib/authorization";
+export type { Course, CourseAccess, User } from "./lib/authorization";
 
 /**
  * Access guards bound to a database. The app uses `authorization`, which reads
@@ -56,6 +58,24 @@ export function createAuthorization(database: Db) {
       courseId: string | number | undefined
     ) {
       return requireManagesCourse(database, request, courseId);
+    },
+
+    /**
+     * Returns the course access when the user may take the course, or throws
+     * 401 signed out / 403 when they neither manage it nor have a PPP-unblocked
+     * Enrollment. Use in actions: loader guards don't protect actions.
+     */
+    requireCanTakeCourse(request: Request, courseId: number) {
+      return requireCanTakeCourse(database, request, courseId);
+    },
+
+    /**
+     * What the current request may do with a course. Never throws, so the
+     * lesson page can show a paywall preview to signed-out and unenrolled
+     * visitors.
+     */
+    getCourseAccess(request: Request, courseId: number) {
+      return getCourseAccess(database, request, courseId);
     },
   };
 }

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { createTestDb, seedBaseData, type TestDb } from "~/test/setup";
+import { eq } from "drizzle-orm";
 import * as schema from "~/db/schema";
 import { UserRole } from "~/db/schema";
 import { setCurrentUserId } from "~/lib/session";
@@ -34,6 +35,28 @@ function addUser(name: string, role: UserRole) {
       email: `${name.toLowerCase().replaceAll(" ", ".")}@example.com`,
       role,
     })
+    .returning()
+    .get();
+}
+
+function enroll(user: { id: number }) {
+  db.insert(schema.enrollments)
+    .values({ userId: user.id, courseId: course.id })
+    .run();
+}
+
+function recordPurchase(user: { id: number }, country: string | null) {
+  db.insert(schema.purchases)
+    .values({ userId: user.id, courseId: course.id, amountPaid: 2500, country })
+    .run();
+}
+
+/** A paid course with PPP on, so a discounted Purchase is country-locked. */
+function makeCoursePaidWithPpp() {
+  course = db
+    .update(schema.courses)
+    .set({ price: 5000, pppEnabled: true })
+    .where(eq(schema.courses.id, course.id))
     .returning()
     .get();
 }
@@ -215,5 +238,148 @@ describe("requireManagesCourse", () => {
     );
     expect(result.user.id).toBe(admin.id);
     expect(result.course.id).toBe(course.id);
+  });
+});
+
+describe("getCourseAccess", () => {
+  it("never throws for a signed-out visitor", async () => {
+    const access = await authz.getCourseAccess(await requestAs(null), course.id);
+    expect(access).toMatchObject({
+      userId: null,
+      managesCourse: false,
+      enrolled: false,
+      canViewContent: false,
+    });
+  });
+
+  it("never throws for a Student who isn't enrolled", async () => {
+    const access = await authz.getCourseAccess(
+      await requestAs(student),
+      course.id
+    );
+    expect(access).toMatchObject({
+      userId: student.id,
+      enrolled: false,
+      canViewContent: false,
+    });
+  });
+
+  it("reports both countries when a discounted Purchase is used elsewhere", async () => {
+    makeCoursePaidWithPpp();
+    enroll(student);
+    recordPurchase(student, "IN");
+
+    const access = await authz.getCourseAccess(
+      await requestAs(student, "US"),
+      course.id
+    );
+    expect(access).toMatchObject({
+      enrolled: true,
+      pppBlocked: true,
+      pppBlockedCountry: "US",
+      pppPurchaseCountry: "IN",
+      canViewContent: false,
+    });
+  });
+
+  it("reports the course's Instructor as managing the course", async () => {
+    const access = await authz.getCourseAccess(
+      await requestAs(instructor),
+      course.id
+    );
+    expect(access).toMatchObject({
+      isOwningInstructor: true,
+      isAdmin: false,
+      managesCourse: true,
+      canViewContent: true,
+    });
+  });
+});
+
+describe("requireCanTakeCourse", () => {
+  it("throws 401 when signed out", async () => {
+    expect(
+      await statusOf(authz.requireCanTakeCourse(await requestAs(null), course.id))
+    ).toBe(401);
+  });
+
+  it("throws 403 for a Student who isn't enrolled", async () => {
+    expect(
+      await statusOf(
+        authz.requireCanTakeCourse(await requestAs(student), course.id)
+      )
+    ).toBe(403);
+  });
+
+  it("allows an enrolled Student", async () => {
+    enroll(student);
+    const access = await authz.requireCanTakeCourse(
+      await requestAs(student),
+      course.id
+    );
+    expect(access).toMatchObject({ userId: student.id, canViewContent: true });
+  });
+
+  it("throws 403 when a discounted Purchase is used from another country", async () => {
+    makeCoursePaidWithPpp();
+    enroll(student);
+    recordPurchase(student, "IN");
+    expect(
+      await statusOf(
+        authz.requireCanTakeCourse(await requestAs(student, "US"), course.id)
+      )
+    ).toBe(403);
+  });
+
+  it("allows a discounted Purchase from its own country", async () => {
+    makeCoursePaidWithPpp();
+    enroll(student);
+    recordPurchase(student, "IN");
+    const access = await authz.requireCanTakeCourse(
+      await requestAs(student, "IN"),
+      course.id
+    );
+    expect(access.pppBlocked).toBe(false);
+  });
+
+  it("exempts the course's Instructor from PPP without an Enrollment", async () => {
+    makeCoursePaidWithPpp();
+    const access = await authz.requireCanTakeCourse(
+      await requestAs(instructor, "US"),
+      course.id
+    );
+    expect(access).toMatchObject({ managesCourse: true, pppBlocked: false });
+  });
+
+  it("exempts an enrolled Platform Admin from PPP", async () => {
+    makeCoursePaidWithPpp();
+    enroll(admin);
+    recordPurchase(admin, "IN");
+    const access = await authz.requireCanTakeCourse(
+      await requestAs(admin, "US"),
+      course.id
+    );
+    expect(access).toMatchObject({ managesCourse: true, pppBlocked: false });
+  });
+
+  it("allows a Claimed Seat with no Purchase (ADR-0004)", async () => {
+    makeCoursePaidWithPpp();
+    enroll(student);
+    const access = await authz.requireCanTakeCourse(
+      await requestAs(student, "US"),
+      course.id
+    );
+    expect(access).toMatchObject({ enrolled: true, pppBlocked: false });
+  });
+
+  it("doesn't block a discounted Purchase when the country is unknown (ADR-0012)", async () => {
+    makeCoursePaidWithPpp();
+    enroll(student);
+    recordPurchase(student, "IN");
+    const access = await authz.requireCanTakeCourse(
+      await requestAs(student),
+      course.id
+    );
+    expect(access).toMatchObject({ pppBlocked: false, canViewContent: true });
   });
 });

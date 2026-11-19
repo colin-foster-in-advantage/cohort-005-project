@@ -1,9 +1,17 @@
 import { data } from "react-router";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import type * as schema from "~/db/schema";
-import { UserRole, courses, users } from "~/db/schema";
+import {
+  UserRole,
+  courses,
+  enrollments,
+  purchases,
+  users,
+} from "~/db/schema";
 import { getCurrentUserId } from "~/lib/session";
+import { resolveCountry } from "~/lib/country.server";
+import { checkPppAccess } from "~/lib/ppp";
 
 export type Db = BetterSQLite3Database<typeof schema>;
 
@@ -108,4 +116,123 @@ export async function requireManagesCourse(
   }
 
   return { user, course };
+}
+
+function isEnrolled(db: Db, userId: number, courseId: number) {
+  return !!db
+    .select({ id: enrollments.id })
+    .from(enrollments)
+    .where(
+      and(eq(enrollments.userId, userId), eq(enrollments.courseId, courseId))
+    )
+    .get();
+}
+
+function findPurchase(db: Db, userId: number, courseId: number) {
+  return db
+    .select()
+    .from(purchases)
+    .where(and(eq(purchases.userId, userId), eq(purchases.courseId, courseId)))
+    .get();
+}
+
+// getCourseAccess never throws: the lesson page renders a paywall preview for
+// signed-out and unenrolled visitors rather than erroring. requireCanTakeCourse
+// is built on it for the actions that should just refuse.
+
+export type CourseAccess = {
+  userId: number | null;
+  user: User | undefined;
+  isAdmin: boolean;
+  /** The Instructor who owns this specific course. */
+  isOwningInstructor: boolean;
+  /** Manages the course: its own Instructor, or a Platform Admin. */
+  managesCourse: boolean;
+  enrolled: boolean;
+  pppBlocked: boolean;
+  pppBlockedCountry: string | null;
+  pppPurchaseCountry: string | null;
+  /**
+   * May they read the course's content (lesson bodies, comments)? Whoever
+   * manages the course always can. Students need an Enrollment that isn't
+   * PPP-blocked.
+   */
+  canViewContent: boolean;
+};
+
+const SIGNED_OUT_ACCESS: CourseAccess = {
+  userId: null,
+  user: undefined,
+  isAdmin: false,
+  isOwningInstructor: false,
+  managesCourse: false,
+  enrolled: false,
+  pppBlocked: false,
+  pppBlockedCountry: null,
+  pppPurchaseCountry: null,
+  canViewContent: false,
+};
+
+export async function getCourseAccess(
+  db: Db,
+  request: Request,
+  courseId: number
+): Promise<CourseAccess> {
+  const user = await findCurrentUser(db, request);
+  if (!user) return SIGNED_OUT_ACCESS;
+
+  const course = findCourse(db, courseId);
+  const isAdmin = user.role === UserRole.Admin;
+  const isOwningInstructor = course?.instructorId === user.id;
+  const manages = isAdmin || isOwningInstructor;
+  const enrolled = isEnrolled(db, user.id, courseId);
+
+  // PPP only restricts Students who bought at a discount; whoever manages the
+  // course is exempt. No Purchase (a Claimed Seat) or an unknown country
+  // never blocks (ADR-0004, ADR-0012).
+  let ppp = {
+    blocked: false,
+    blockedCountry: null as string | null,
+    purchaseCountry: null as string | null,
+  };
+
+  if (enrolled && !manages && course) {
+    const purchase = findPurchase(db, user.id, courseId);
+    const currentCountry = await resolveCountry(request);
+    ppp = checkPppAccess(
+      course.price,
+      course.pppEnabled,
+      purchase?.country ?? null,
+      currentCountry
+    );
+  }
+
+  return {
+    userId: user.id,
+    user,
+    isAdmin,
+    isOwningInstructor,
+    managesCourse: manages,
+    enrolled,
+    pppBlocked: ppp.blocked,
+    pppBlockedCountry: ppp.blockedCountry,
+    pppPurchaseCountry: ppp.purchaseCountry,
+    canViewContent: manages || (enrolled && !ppp.blocked),
+  };
+}
+
+export async function requireCanTakeCourse(
+  db: Db,
+  request: Request,
+  courseId: number
+): Promise<CourseAccess> {
+  const access = await getCourseAccess(db, request, courseId);
+
+  if (!access.userId) throw signedOut();
+
+  if (!access.canViewContent) {
+    throw data("You must be enrolled in this course.", { status: 403 });
+  }
+
+  return access;
 }
