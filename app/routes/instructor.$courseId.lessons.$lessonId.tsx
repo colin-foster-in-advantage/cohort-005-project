@@ -2,15 +2,8 @@ import { useState, useEffect } from "react";
 import { Link, useFetcher, useBlocker } from "react-router";
 import { toast } from "sonner";
 import type { Route } from "./+types/instructor.$courseId.lessons.$lessonId";
-import { getCurrentUserId } from "~/lib/session";
-import {
-  UserRole,
-  users,
-  courses,
-  modules,
-  lessons,
-  quizzes,
-} from "~/db/schema";
+import { authorization } from "~/modules/authorization/index.server";
+import { modules, lessons, quizzes } from "~/db/schema";
 import { db } from "~/db";
 import { eq } from "drizzle-orm";
 import { Card, CardContent, CardHeader } from "~/components/ui/card";
@@ -31,7 +24,6 @@ import { z } from "zod";
 import { parseFormData, parseParams } from "~/lib/validation";
 
 const instructorLessonParamsSchema = z.object({
-  courseId: z.coerce.number().int(),
   lessonId: z.coerce.number().int(),
 });
 
@@ -42,14 +34,6 @@ const updateLessonSchema = z.object({
   durationMinutes: z.string().optional(),
   githubRepoUrl: z.string().trim().optional(),
 });
-
-function getUserById(id: number) {
-  return db.select().from(users).where(eq(users.id, id)).get();
-}
-
-function getCourseById(id: number) {
-  return db.select().from(courses).where(eq(courses.id, id)).get();
-}
 
 function getModuleById(id: number) {
   return db.select().from(modules).where(eq(modules.id, id)).get();
@@ -99,39 +83,11 @@ export function meta({ loaderData }: Route.MetaArgs) {
 }
 
 export async function loader({ params, request }: Route.LoaderArgs) {
-  const currentUserId = await getCurrentUserId(request);
-
-  if (!currentUserId) {
-    throw data("Select a user from the DevUI panel to manage lessons.", {
-      status: 401,
-    });
-  }
-
-  const user = getUserById(currentUserId);
-
-  if (
-    !user ||
-    (user.role !== UserRole.Instructor && user.role !== UserRole.Admin)
-  ) {
-    throw data("Only instructors and admins can access this page.", {
-      status: 403,
-    });
-  }
-
-  const courseId = parseInt(params.courseId, 10);
-  if (isNaN(courseId)) {
-    throw data("Invalid course ID.", { status: 400 });
-  }
-
-  const course = getCourseById(courseId);
-
-  if (!course) {
-    throw data("Course not found.", { status: 404 });
-  }
-
-  if (course.instructorId !== currentUserId && user.role !== UserRole.Admin) {
-    throw data("You can only edit your own courses.", { status: 403 });
-  }
+  const { course } = await authorization.requireManagesCourse(
+    request,
+    params.courseId
+  );
+  const courseId = course.id;
 
   const lessonId = parseInt(params.lessonId, 10);
   if (isNaN(lessonId)) {
@@ -154,35 +110,13 @@ export async function loader({ params, request }: Route.LoaderArgs) {
 }
 
 export async function action({ params, request }: Route.ActionArgs) {
-  const currentUserId = await getCurrentUserId(request);
-
-  if (!currentUserId) {
-    throw data("You must be logged in.", { status: 401 });
-  }
-
-  const user = getUserById(currentUserId);
-  if (
-    !user ||
-    (user.role !== UserRole.Instructor && user.role !== UserRole.Admin)
-  ) {
-    throw data("Only instructors and admins can edit lessons.", {
-      status: 403,
-    });
-  }
-
-  const { courseId, lessonId } = parseParams(
-    params,
-    instructorLessonParamsSchema
+  const { course } = await authorization.requireManagesCourse(
+    request,
+    params.courseId
   );
+  const courseId = course.id;
 
-  const course = getCourseById(courseId);
-  if (!course) {
-    throw data("Course not found.", { status: 404 });
-  }
-
-  if (course.instructorId !== currentUserId && user.role !== UserRole.Admin) {
-    throw data("You can only edit your own courses.", { status: 403 });
-  }
+  const { lessonId } = parseParams(params, instructorLessonParamsSchema);
 
   const lesson = getLessonById(lessonId);
   if (!lesson) {
