@@ -40,7 +40,7 @@ export function createAuthorization(database: Db) {
     },
 
     /**
-     * Returns `{ user, isAdmin }` for an Instructor or a Platform Admin, or
+     * Returns `{ user, isPlatformAdmin }` for an Instructor or a Platform Admin, or
      * throws 401/403. For pages that span all of someone's courses.
      */
     requireInstructorOrPlatformAdmin(request: Request) {
@@ -53,17 +53,15 @@ export function createAuthorization(database: Db) {
      * as a route param or a number. Throws, in order: 401 signed out, 400
      * malformed id, 404 no such course, 403 doesn't manage it.
      */
-    requireManagesCourse(
-      request: Request,
-      courseId: string | number | undefined
-    ) {
+    requireManagesCourse(request: Request, courseId: string | number) {
       return requireManagesCourse(database, request, courseId);
     },
 
     /**
-     * Returns the course access when the user may take the course, or throws
-     * 401 signed out / 403 when they neither manage it nor have a PPP-unblocked
-     * Enrollment. Use in actions: loader guards don't protect actions.
+     * Returns the course access, with the signed-in user, when they may take
+     * the course, or throws 401 signed out / 403 when they neither manage it
+     * nor have a PPP-unblocked Enrollment. Use in actions: loader guards don't
+     * protect actions.
      */
     requireCanTakeCourse(request: Request, courseId: number) {
       return requireCanTakeCourse(database, request, courseId);

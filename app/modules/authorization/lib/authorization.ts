@@ -1,11 +1,13 @@
 import { data } from "react-router";
+import { z } from "zod";
 import { and, eq } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import type * as schema from "~/db/schema";
-import { UserRole, courses, enrollments, purchases, users } from "~/db/schema";
+import { UserRole, courses, purchases, users } from "~/db/schema";
 import { getCurrentUserId } from "~/lib/session";
 import { resolveCountry } from "~/lib/country.server";
 import { checkPppAccess } from "~/lib/ppp";
+import { isEnrolled } from "~/lib/enrollments.server";
 
 export type Db = BetterSQLite3Database<typeof schema>;
 
@@ -44,7 +46,9 @@ export async function requirePlatformAdmin(
   return user;
 }
 
-/** Instructors only: Platform Admins are refused, as they are today. */
+// Refuses Platform Admins too. The instructor dashboard lists the user's own
+// courses and the new-course page makes the user the course's Instructor;
+// neither fits a Platform Admin, who manages courses from the admin pages.
 export async function requireInstructor(
   db: Db,
   request: Request
@@ -59,14 +63,14 @@ export async function requireInstructor(
 export async function requireInstructorOrPlatformAdmin(
   db: Db,
   request: Request
-): Promise<{ user: User; isAdmin: boolean }> {
+): Promise<{ user: User; isPlatformAdmin: boolean }> {
   const user = await requireSignedIn(db, request);
   if (user.role !== UserRole.Instructor && user.role !== UserRole.Admin) {
     throw data("Only Instructors and Platform Admins can access this page.", {
       status: 403,
     });
   }
-  return { user, isAdmin: user.role === UserRole.Admin };
+  return { user, isPlatformAdmin: user.role === UserRole.Admin };
 }
 
 function findCourse(db: Db, courseId: number): Course | undefined {
@@ -78,22 +82,23 @@ function managesCourse(user: User, course: Pick<Course, "instructorId">) {
   return user.role === UserRole.Admin || course.instructorId === user.id;
 }
 
-/** A course id from a route param (parsed as routes always have) or a number. */
-function parseCourseId(courseId: string | number | undefined): number {
-  return typeof courseId === "number" ? courseId : parseInt(courseId ?? "", 10);
-}
+const courseIdSchema = z.union([
+  z.number().int(),
+  z.string().regex(/^\d+$/).transform(Number),
+]);
 
 export async function requireManagesCourse(
   db: Db,
   request: Request,
-  courseIdParam: string | number | undefined
+  courseIdParam: string | number
 ): Promise<{ user: User; course: Course }> {
   const user = await requireSignedIn(db, request);
 
-  const courseId = parseCourseId(courseIdParam);
-  if (Number.isNaN(courseId)) {
+  const parsed = courseIdSchema.safeParse(courseIdParam);
+  if (!parsed.success) {
     throw data("Invalid course ID.", { status: 400 });
   }
+  const courseId = parsed.data;
 
   const course = findCourse(db, courseId);
   if (!course) {
@@ -105,16 +110,6 @@ export async function requireManagesCourse(
   }
 
   return { user, course };
-}
-
-function isEnrolled(db: Db, userId: number, courseId: number) {
-  return !!db
-    .select({ id: enrollments.id })
-    .from(enrollments)
-    .where(
-      and(eq(enrollments.userId, userId), eq(enrollments.courseId, courseId))
-    )
-    .get();
 }
 
 function findPurchase(db: Db, userId: number, courseId: number) {
@@ -132,7 +127,7 @@ function findPurchase(db: Db, userId: number, courseId: number) {
 export type CourseAccess = {
   userId: number | null;
   user: User | undefined;
-  isAdmin: boolean;
+  isPlatformAdmin: boolean;
   /** The Instructor who owns this specific course. */
   isOwningInstructor: boolean;
   /** Manages the course: its own Instructor, or a Platform Admin. */
@@ -152,7 +147,7 @@ export type CourseAccess = {
 const SIGNED_OUT_ACCESS: CourseAccess = {
   userId: null,
   user: undefined,
-  isAdmin: false,
+  isPlatformAdmin: false,
   isOwningInstructor: false,
   managesCourse: false,
   enrolled: false,
@@ -171,9 +166,9 @@ export async function getCourseAccess(
   if (!user) return SIGNED_OUT_ACCESS;
 
   const course = findCourse(db, courseId);
-  const isAdmin = user.role === UserRole.Admin;
+  const isPlatformAdmin = user.role === UserRole.Admin;
   const isOwningInstructor = course?.instructorId === user.id;
-  const manages = isAdmin || isOwningInstructor;
+  const manages = isPlatformAdmin || isOwningInstructor;
   const enrolled = isEnrolled(db, user.id, courseId);
 
   // PPP only restricts Students who bought at a discount; whoever manages the
@@ -199,7 +194,7 @@ export async function getCourseAccess(
   return {
     userId: user.id,
     user,
-    isAdmin,
+    isPlatformAdmin,
     isOwningInstructor,
     managesCourse: manages,
     enrolled,
@@ -210,18 +205,22 @@ export async function getCourseAccess(
   };
 }
 
+/** Course access for a signed-in user who may take the course. */
+export type CourseTakerAccess = CourseAccess & { userId: number; user: User };
+
 export async function requireCanTakeCourse(
   db: Db,
   request: Request,
   courseId: number
-): Promise<CourseAccess> {
+): Promise<CourseTakerAccess> {
   const access = await getCourseAccess(db, request, courseId);
+  const { userId, user } = access;
 
-  if (!access.userId) throw signedOut();
+  if (userId === null || !user) throw signedOut();
 
   if (!access.canViewContent) {
     throw data("You must be enrolled in this course.", { status: 403 });
   }
 
-  return access;
+  return { ...access, userId, user };
 }

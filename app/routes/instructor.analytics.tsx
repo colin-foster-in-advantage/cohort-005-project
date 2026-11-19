@@ -64,10 +64,10 @@ export function meta() {
 }
 
 export async function loader({ request, url }: Route.LoaderArgs) {
-  const { user, isAdmin } =
+  const { user, isPlatformAdmin } =
     await authorization.requireInstructorOrPlatformAdmin(request);
   return instructorAnalytics.get(
-    { userId: user.id, isAdmin },
+    { userId: user.id, isAdmin: isPlatformAdmin },
     url.searchParams,
     new Date()
   );

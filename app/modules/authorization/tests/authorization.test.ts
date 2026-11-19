@@ -4,6 +4,8 @@ import { eq } from "drizzle-orm";
 import * as schema from "~/db/schema";
 import { UserRole } from "~/db/schema";
 import { setCurrentUserId } from "~/lib/session";
+import { enrollStudent } from "~/lib/enrollments.server";
+import { fakeNotifications } from "~/lib/notifications.fake.server";
 import { createAuthorization } from "../index.server";
 
 let db: TestDb;
@@ -26,6 +28,11 @@ beforeEach(() => {
 });
 
 // ─── Fixtures ───
+//
+// Enrollments go through the enrollments service. Users, Purchases and course
+// pricing have no service function that takes a database (signup, checkout and
+// the course editor write them inside their routes), so those rows are
+// inserted directly.
 
 function addUser(name: string, role: UserRole) {
   return db
@@ -39,10 +46,15 @@ function addUser(name: string, role: UserRole) {
     .get();
 }
 
-function enroll(user: { id: number }) {
-  db.insert(schema.enrollments)
-    .values({ userId: user.id, courseId: course.id })
-    .run();
+async function enroll(user: { id: number }) {
+  const result = await enrollStudent(
+    db,
+    user.id,
+    course.id,
+    new Date(),
+    fakeNotifications()
+  );
+  if (!result.ok) throw new Error(result.error);
 }
 
 function recordPurchase(user: { id: number }, country: string | null) {
@@ -175,7 +187,7 @@ describe("requireInstructorOrPlatformAdmin", () => {
     );
     expect(result).toMatchObject({
       user: { id: instructor.id },
-      isAdmin: false,
+      isPlatformAdmin: false,
     });
   });
 
@@ -183,7 +195,10 @@ describe("requireInstructorOrPlatformAdmin", () => {
     const result = await authz.requireInstructorOrPlatformAdmin(
       await requestAs(admin)
     );
-    expect(result).toMatchObject({ user: { id: admin.id }, isAdmin: true });
+    expect(result).toMatchObject({
+      user: { id: admin.id },
+      isPlatformAdmin: true,
+    });
   });
 });
 
@@ -196,13 +211,16 @@ describe("requireManagesCourse", () => {
     ).toBe(401);
   });
 
-  it("throws 400 for a malformed course id", async () => {
-    expect(
-      await statusOf(
-        authz.requireManagesCourse(await requestAs(instructor), "abc")
-      )
-    ).toBe(400);
-  });
+  it.each(["abc", "5abc", "1.5", ""])(
+    "throws 400 for the malformed course id %j",
+    async (courseId) => {
+      expect(
+        await statusOf(
+          authz.requireManagesCourse(await requestAs(instructor), courseId)
+        )
+      ).toBe(400);
+    }
+  );
 
   it("throws 404 when the course doesn't exist", async () => {
     expect(
@@ -275,7 +293,7 @@ describe("getCourseAccess", () => {
 
   it("reports both countries when a discounted Purchase is used elsewhere", async () => {
     makeCoursePaidWithPpp();
-    enroll(student);
+    await enroll(student);
     recordPurchase(student, "IN");
 
     const access = await authz.getCourseAccess(
@@ -298,7 +316,7 @@ describe("getCourseAccess", () => {
     );
     expect(access).toMatchObject({
       isOwningInstructor: true,
-      isAdmin: false,
+      isPlatformAdmin: false,
       managesCourse: true,
       canViewContent: true,
     });
@@ -323,7 +341,7 @@ describe("requireCanTakeCourse", () => {
   });
 
   it("allows an enrolled Student", async () => {
-    enroll(student);
+    await enroll(student);
     const access = await authz.requireCanTakeCourse(
       await requestAs(student),
       course.id
@@ -331,9 +349,18 @@ describe("requireCanTakeCourse", () => {
     expect(access).toMatchObject({ userId: student.id, canViewContent: true });
   });
 
+  it("returns the signed-in user it proved may take the course", async () => {
+    await enroll(student);
+    const { user } = await authz.requireCanTakeCourse(
+      await requestAs(student),
+      course.id
+    );
+    expect(user.name).toBe(student.name);
+  });
+
   it("throws 403 when a discounted Purchase is used from another country", async () => {
     makeCoursePaidWithPpp();
-    enroll(student);
+    await enroll(student);
     recordPurchase(student, "IN");
     expect(
       await statusOf(
@@ -344,7 +371,7 @@ describe("requireCanTakeCourse", () => {
 
   it("allows a discounted Purchase from its own country", async () => {
     makeCoursePaidWithPpp();
-    enroll(student);
+    await enroll(student);
     recordPurchase(student, "IN");
     const access = await authz.requireCanTakeCourse(
       await requestAs(student, "IN"),
@@ -364,7 +391,7 @@ describe("requireCanTakeCourse", () => {
 
   it("exempts an enrolled Platform Admin from PPP", async () => {
     makeCoursePaidWithPpp();
-    enroll(admin);
+    await enroll(admin);
     recordPurchase(admin, "IN");
     const access = await authz.requireCanTakeCourse(
       await requestAs(admin, "US"),
@@ -375,7 +402,7 @@ describe("requireCanTakeCourse", () => {
 
   it("allows a Claimed Seat with no Purchase (ADR-0004)", async () => {
     makeCoursePaidWithPpp();
-    enroll(student);
+    await enroll(student);
     const access = await authz.requireCanTakeCourse(
       await requestAs(student, "US"),
       course.id
@@ -385,7 +412,7 @@ describe("requireCanTakeCourse", () => {
 
   it("doesn't block a discounted Purchase when the country is unknown (ADR-0012)", async () => {
     makeCoursePaidWithPpp();
-    enroll(student);
+    await enroll(student);
     recordPurchase(student, "IN");
     const access = await authz.requireCanTakeCourse(
       await requestAs(student),

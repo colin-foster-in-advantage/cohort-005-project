@@ -8,13 +8,15 @@ import {
   type DropResult,
 } from "@hello-pangea/dnd";
 import type { Route } from "./+types/instructor.$courseId";
-import { authorization } from "~/modules/authorization/index.server";
+import {
+  authorization,
+  type Course,
+} from "~/modules/authorization/index.server";
 import { markdown } from "~/lib/text";
 import { CourseStatus } from "~/db/schema";
 import { db } from "~/db";
 import {
   courses,
-  categories,
   users,
   modules,
   lessons,
@@ -64,39 +66,11 @@ function getUserById(id: number) {
   return db.select().from(users).where(eq(users.id, id)).get();
 }
 
-function getCourseWithDetails(id: number) {
-  const course = db
-    .select({
-      id: courses.id,
-      title: courses.title,
-      slug: courses.slug,
-      description: courses.description,
-      salesCopy: courses.salesCopy,
-      instructorId: courses.instructorId,
-      categoryId: courses.categoryId,
-      status: courses.status,
-      coverImageUrl: courses.coverImageUrl,
-      price: courses.price,
-      pppEnabled: courses.pppEnabled,
-      createdAt: courses.createdAt,
-      updatedAt: courses.updatedAt,
-      instructorName: users.name,
-      instructorAvatarUrl: users.avatarUrl,
-      instructorBio: users.bio,
-      categoryName: categories.name,
-    })
-    .from(courses)
-    .innerJoin(users, eq(courses.instructorId, users.id))
-    .innerJoin(categories, eq(courses.categoryId, categories.id))
-    .where(eq(courses.id, id))
-    .get();
-
-  if (!course) return null;
-
+function withModulesAndLessons(course: Course) {
   const courseModules = db
     .select()
     .from(modules)
-    .where(eq(modules.courseId, id))
+    .where(eq(modules.courseId, course.id))
     .orderBy(modules.position)
     .all();
 
@@ -552,11 +526,7 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     params.courseId
   );
   const courseId = managed.id;
-
-  const course = getCourseWithDetails(courseId);
-  if (!course) {
-    throw data("Course not found.", { status: 404 });
-  }
+  const course = withModulesAndLessons(managed);
 
   const lessonCount = getLessonCountForCourse(courseId);
   const enrollmentCount = getEnrollmentCountForCourse(courseId);
