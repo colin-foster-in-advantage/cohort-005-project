@@ -135,9 +135,9 @@ describe("requireInstructor", () => {
   });
 
   it("throws 403 for a Platform Admin", async () => {
-    expect(await statusOf(authz.requireInstructor(await requestAs(admin)))).toBe(
-      403
-    );
+    expect(
+      await statusOf(authz.requireInstructor(await requestAs(admin)))
+    ).toBe(403);
   });
 
   it("returns an Instructor", async () => {
@@ -243,7 +243,10 @@ describe("requireManagesCourse", () => {
 
 describe("getCourseAccess", () => {
   it("never throws for a signed-out visitor", async () => {
-    const access = await authz.getCourseAccess(await requestAs(null), course.id);
+    const access = await authz.getCourseAccess(
+      await requestAs(null),
+      course.id
+    );
     expect(access).toMatchObject({
       userId: null,
       managesCourse: false,
@@ -299,7 +302,9 @@ describe("getCourseAccess", () => {
 describe("requireCanTakeCourse", () => {
   it("throws 401 when signed out", async () => {
     expect(
-      await statusOf(authz.requireCanTakeCourse(await requestAs(null), course.id))
+      await statusOf(
+        authz.requireCanTakeCourse(await requestAs(null), course.id)
+      )
     ).toBe(401);
   });
 

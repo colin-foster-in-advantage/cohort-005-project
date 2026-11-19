@@ -2,13 +2,7 @@ import { data } from "react-router";
 import { and, eq } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import type * as schema from "~/db/schema";
-import {
-  UserRole,
-  courses,
-  enrollments,
-  purchases,
-  users,
-} from "~/db/schema";
+import { UserRole, courses, enrollments, purchases, users } from "~/db/schema";
 import { getCurrentUserId } from "~/lib/session";
 import { resolveCountry } from "~/lib/country.server";
 import { checkPppAccess } from "~/lib/ppp";
@@ -33,10 +27,7 @@ async function findCurrentUser(
   return db.select().from(users).where(eq(users.id, userId)).get();
 }
 
-export async function requireSignedIn(
-  db: Db,
-  request: Request
-): Promise<User> {
+export async function requireSignedIn(db: Db, request: Request): Promise<User> {
   const user = await findCurrentUser(db, request);
   if (!user) throw signedOut();
   return user;
@@ -89,9 +80,7 @@ function managesCourse(user: User, course: Pick<Course, "instructorId">) {
 
 /** A course id from a route param (parsed as routes always have) or a number. */
 function parseCourseId(courseId: string | number | undefined): number {
-  return typeof courseId === "number"
-    ? courseId
-    : parseInt(courseId ?? "", 10);
+  return typeof courseId === "number" ? courseId : parseInt(courseId ?? "", 10);
 }
 
 export async function requireManagesCourse(
