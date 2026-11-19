@@ -115,6 +115,12 @@ describe("requirePlatformAdmin", () => {
     ).toBe(403);
   });
 
+  it("throws 403 for a Student", async () => {
+    expect(
+      await statusOf(authz.requirePlatformAdmin(await requestAs(student)))
+    ).toBe(403);
+  });
+
   it("returns a Platform Admin", async () => {
     const user = await authz.requirePlatformAdmin(await requestAs(admin));
     expect(user.id).toBe(admin.id);
