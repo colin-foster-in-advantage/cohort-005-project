@@ -1,14 +1,7 @@
 import { Link } from "react-router";
 import type { Route } from "./+types/instructor.$courseId.modules.$moduleId";
-import { getCurrentUserId } from "~/lib/session";
-import {
-  UserRole,
-  users,
-  courses,
-  categories,
-  modules,
-  lessons,
-} from "~/db/schema";
+import { authorization } from "~/modules/authorization/index.server";
+import { users, courses, categories, modules, lessons } from "~/db/schema";
 import { db } from "~/db";
 import { eq, or } from "drizzle-orm";
 import { Card, CardContent } from "~/components/ui/card";
@@ -29,18 +22,9 @@ import { data, isRouteErrorResponse } from "react-router";
 import { formatDuration } from "~/lib/utils";
 import { z } from "zod";
 
-const paramsSchema = z.object({
-  courseId: z.coerce.number().int(),
+const moduleParamsSchema = z.object({
   moduleId: z.coerce.number().int(),
 });
-
-function getUserById(id: number) {
-  return db.select().from(users).where(eq(users.id, id)).get();
-}
-
-function getCourseById(id: number) {
-  return db.select().from(courses).where(eq(courses.id, id)).get();
-}
 
 function getCourseWithDetails(id: number) {
   const course = db
@@ -120,40 +104,17 @@ export function meta({ loaderData }: Route.MetaArgs) {
 }
 
 export async function loader({ params, request }: Route.LoaderArgs) {
-  const currentUserId = await getCurrentUserId(request);
+  const { course } = await authorization.requireManagesCourse(
+    request,
+    params.courseId
+  );
+  const courseId = course.id;
 
-  if (!currentUserId) {
-    throw data("Select a user from the DevUI panel to manage courses.", {
-      status: 401,
-    });
-  }
-
-  const user = getUserById(currentUserId);
-
-  if (
-    !user ||
-    (user.role !== UserRole.Instructor && user.role !== UserRole.Admin)
-  ) {
-    throw data("Only instructors and admins can access this page.", {
-      status: 403,
-    });
-  }
-
-  const parsed = paramsSchema.safeParse(params);
+  const parsed = moduleParamsSchema.safeParse(params);
   if (!parsed.success) {
     throw data("Invalid parameters", { status: 400 });
   }
-
-  const { courseId, moduleId } = parsed.data;
-
-  const course = getCourseById(courseId);
-  if (!course) {
-    throw data("Course not found.", { status: 404 });
-  }
-
-  if (course.instructorId !== currentUserId && user.role !== UserRole.Admin) {
-    throw data("You can only view your own courses.", { status: 403 });
-  }
+  const { moduleId } = parsed.data;
 
   const courseWithDetails = getCourseWithDetails(courseId);
   if (!courseWithDetails) {
