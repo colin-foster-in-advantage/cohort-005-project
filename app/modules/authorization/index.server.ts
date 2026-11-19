@@ -2,12 +2,13 @@ import { db } from "~/db";
 import {
   requireInstructor,
   requireInstructorOrPlatformAdmin,
+  requireManagesCourse,
   requirePlatformAdmin,
   requireSignedIn,
   type Db,
 } from "./lib/authorization";
 
-export type { User } from "./lib/authorization";
+export type { Course, User } from "./lib/authorization";
 
 /**
  * Access guards bound to a database. The app uses `authorization`, which reads
@@ -42,6 +43,19 @@ export function createAuthorization(database: Db) {
      */
     requireInstructorOrPlatformAdmin(request: Request) {
       return requireInstructorOrPlatformAdmin(database, request);
+    },
+
+    /**
+     * Returns `{ user, course }` (the plain course row) when the user manages
+     * the course: its own Instructor, or a Platform Admin. Takes the course id
+     * as a route param or a number. Throws, in order: 401 signed out, 400
+     * malformed id, 404 no such course, 403 doesn't manage it.
+     */
+    requireManagesCourse(
+      request: Request,
+      courseId: string | number | undefined
+    ) {
+      return requireManagesCourse(database, request, courseId);
     },
   };
 }

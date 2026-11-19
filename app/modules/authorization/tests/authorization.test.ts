@@ -10,6 +10,7 @@ let authz: ReturnType<typeof createAuthorization>;
 let student: typeof schema.users.$inferSelect;
 let instructor: typeof schema.users.$inferSelect;
 let admin: typeof schema.users.$inferSelect;
+let otherInstructor: typeof schema.users.$inferSelect;
 let course: typeof schema.courses.$inferSelect;
 
 beforeEach(() => {
@@ -19,6 +20,7 @@ beforeEach(() => {
   instructor = base.instructor;
   course = base.course;
   admin = addUser("Pat Admin", UserRole.Admin);
+  otherInstructor = addUser("Olive Other", UserRole.Instructor);
   authz = createAuthorization(db);
 });
 
@@ -153,5 +155,65 @@ describe("requireInstructorOrPlatformAdmin", () => {
       await requestAs(admin)
     );
     expect(result).toMatchObject({ user: { id: admin.id }, isAdmin: true });
+  });
+});
+
+describe("requireManagesCourse", () => {
+  it("throws 401 when signed out", async () => {
+    expect(
+      await statusOf(
+        authz.requireManagesCourse(await requestAs(null), String(course.id))
+      )
+    ).toBe(401);
+  });
+
+  it("throws 400 for a malformed course id", async () => {
+    expect(
+      await statusOf(
+        authz.requireManagesCourse(await requestAs(instructor), "abc")
+      )
+    ).toBe(400);
+  });
+
+  it("throws 404 when the course doesn't exist", async () => {
+    expect(
+      await statusOf(
+        authz.requireManagesCourse(await requestAs(instructor), "9999")
+      )
+    ).toBe(404);
+  });
+
+  it("throws 403 for another Instructor", async () => {
+    expect(
+      await statusOf(
+        authz.requireManagesCourse(await requestAs(otherInstructor), course.id)
+      )
+    ).toBe(403);
+  });
+
+  it("throws 403 for a Student", async () => {
+    expect(
+      await statusOf(
+        authz.requireManagesCourse(await requestAs(student), course.id)
+      )
+    ).toBe(403);
+  });
+
+  it("returns the user and course for the course's Instructor", async () => {
+    const result = await authz.requireManagesCourse(
+      await requestAs(instructor),
+      String(course.id)
+    );
+    expect(result.user.id).toBe(instructor.id);
+    expect(result.course).toEqual(course);
+  });
+
+  it("allows a Platform Admin", async () => {
+    const result = await authz.requireManagesCourse(
+      await requestAs(admin),
+      course.id
+    );
+    expect(result.user.id).toBe(admin.id);
+    expect(result.course.id).toBe(course.id);
   });
 });
