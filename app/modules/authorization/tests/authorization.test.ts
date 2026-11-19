@@ -1,0 +1,157 @@
+import { describe, it, expect, beforeEach } from "vitest";
+import { createTestDb, seedBaseData, type TestDb } from "~/test/setup";
+import * as schema from "~/db/schema";
+import { UserRole } from "~/db/schema";
+import { setCurrentUserId } from "~/lib/session";
+import { createAuthorization } from "../index.server";
+
+let db: TestDb;
+let authz: ReturnType<typeof createAuthorization>;
+let student: typeof schema.users.$inferSelect;
+let instructor: typeof schema.users.$inferSelect;
+let admin: typeof schema.users.$inferSelect;
+let course: typeof schema.courses.$inferSelect;
+
+beforeEach(() => {
+  db = createTestDb();
+  const base = seedBaseData(db);
+  student = base.user;
+  instructor = base.instructor;
+  course = base.course;
+  admin = addUser("Pat Admin", UserRole.Admin);
+  authz = createAuthorization(db);
+});
+
+// ─── Fixtures ───
+
+function addUser(name: string, role: UserRole) {
+  return db
+    .insert(schema.users)
+    .values({
+      name,
+      email: `${name.toLowerCase().replaceAll(" ", ".")}@example.com`,
+      role,
+    })
+    .returning()
+    .get();
+}
+
+async function requestAs(
+  user: { id: number } | null,
+  country?: string
+): Promise<Request> {
+  const headers = new Headers();
+  if (user) {
+    const setCookie = await setCurrentUserId(
+      new Request("http://test/"),
+      user.id
+    );
+    headers.set("Cookie", setCookie.split(";")[0]);
+  }
+  if (country) headers.set("CF-IPCountry", country);
+  return new Request("http://test/", { headers });
+}
+
+/** The HTTP status of the response a guard threw. */
+async function statusOf(promise: Promise<unknown>): Promise<number> {
+  try {
+    await promise;
+  } catch (error) {
+    const status = (error as { init?: { status?: number } }).init?.status;
+    if (status !== undefined) return status;
+    throw error;
+  }
+  throw new Error("Expected the guard to throw");
+}
+
+describe("requireSignedIn", () => {
+  it("throws 401 when signed out", async () => {
+    expect(await statusOf(authz.requireSignedIn(await requestAs(null)))).toBe(
+      401
+    );
+  });
+
+  it("returns the signed-in user", async () => {
+    const user = await authz.requireSignedIn(await requestAs(student));
+    expect(user.id).toBe(student.id);
+  });
+});
+
+describe("requirePlatformAdmin", () => {
+  it("throws 401 when signed out", async () => {
+    expect(
+      await statusOf(authz.requirePlatformAdmin(await requestAs(null)))
+    ).toBe(401);
+  });
+
+  it("throws 403 for an Instructor", async () => {
+    expect(
+      await statusOf(authz.requirePlatformAdmin(await requestAs(instructor)))
+    ).toBe(403);
+  });
+
+  it("returns a Platform Admin", async () => {
+    const user = await authz.requirePlatformAdmin(await requestAs(admin));
+    expect(user.id).toBe(admin.id);
+  });
+});
+
+describe("requireInstructor", () => {
+  it("throws 401 when signed out", async () => {
+    expect(await statusOf(authz.requireInstructor(await requestAs(null)))).toBe(
+      401
+    );
+  });
+
+  it("throws 403 for a Student", async () => {
+    expect(
+      await statusOf(authz.requireInstructor(await requestAs(student)))
+    ).toBe(403);
+  });
+
+  it("throws 403 for a Platform Admin", async () => {
+    expect(await statusOf(authz.requireInstructor(await requestAs(admin)))).toBe(
+      403
+    );
+  });
+
+  it("returns an Instructor", async () => {
+    const user = await authz.requireInstructor(await requestAs(instructor));
+    expect(user.id).toBe(instructor.id);
+  });
+});
+
+describe("requireInstructorOrPlatformAdmin", () => {
+  it("throws 401 when signed out", async () => {
+    expect(
+      await statusOf(
+        authz.requireInstructorOrPlatformAdmin(await requestAs(null))
+      )
+    ).toBe(401);
+  });
+
+  it("throws 403 for a Student", async () => {
+    expect(
+      await statusOf(
+        authz.requireInstructorOrPlatformAdmin(await requestAs(student))
+      )
+    ).toBe(403);
+  });
+
+  it("allows an Instructor, who is not a Platform Admin", async () => {
+    const result = await authz.requireInstructorOrPlatformAdmin(
+      await requestAs(instructor)
+    );
+    expect(result).toMatchObject({
+      user: { id: instructor.id },
+      isAdmin: false,
+    });
+  });
+
+  it("allows a Platform Admin", async () => {
+    const result = await authz.requireInstructorOrPlatformAdmin(
+      await requestAs(admin)
+    );
+    expect(result).toMatchObject({ user: { id: admin.id }, isAdmin: true });
+  });
+});
