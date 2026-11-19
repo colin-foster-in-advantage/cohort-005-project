@@ -40,7 +40,7 @@ export function createAuthorization(database: Db) {
     },
 
     /**
-     * Returns `{ user, isAdmin }` for an Instructor or a Platform Admin, or
+     * Returns `{ user, isPlatformAdmin }` for an Instructor or a Platform Admin, or
      * throws 401/403. For pages that span all of someone's courses.
      */
     requireInstructorOrPlatformAdmin(request: Request) {

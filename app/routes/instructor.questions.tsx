@@ -49,7 +49,7 @@ function getUnansweredQuestions(instructorId: number | null): QueuedQuestion[] {
 
   // Correlated: matches a live reply, by someone who manages the course, to
   // the outer question.
-  const managerReply = db
+  const replyFromWhoeverManagesCourse = db
     .select({ one: sql`1` })
     .from(reply)
     .innerJoin(replyAuthor, eq(replyAuthor.id, reply.userId))
@@ -67,11 +67,11 @@ function getUnansweredQuestions(instructorId: number | null): QueuedQuestion[] {
   const conditions = [
     isNull(comments.parentId),
     isNull(comments.deletedAt),
-    // Managers asking their own question shouldn't queue up as work for
-    // themselves.
+    // A question from someone who manages the course shouldn't queue up as
+    // work for them.
     ne(author.role, UserRole.Admin),
     ne(comments.userId, courses.instructorId),
-    notExists(managerReply),
+    notExists(replyFromWhoeverManagesCourse),
   ];
 
   if (instructorId !== null) {
@@ -134,11 +134,11 @@ export function meta() {
 }
 
 export async function loader({ request }: Route.LoaderArgs) {
-  const { user, isAdmin } =
+  const { user, isPlatformAdmin } =
     await authorization.requireInstructorOrPlatformAdmin(request);
 
-  // Admins span every course; instructors see only the courses they own.
-  const questions = getUnansweredQuestions(isAdmin ? null : user.id);
+  // Platform Admins span every course; Instructors see only their own courses.
+  const questions = getUnansweredQuestions(isPlatformAdmin ? null : user.id);
 
   const rendered = await Promise.all(
     questions.map(async (question) => ({
@@ -147,7 +147,7 @@ export async function loader({ request }: Route.LoaderArgs) {
     }))
   );
 
-  return { questions: rendered, isAdmin };
+  return { questions: rendered, isPlatformAdmin };
 }
 
 export async function action({ request }: Route.ActionArgs) {
@@ -308,17 +308,17 @@ function QuestionCard({ question }: { question: Question }) {
 export default function InstructorQuestions({
   loaderData,
 }: Route.ComponentProps) {
-  const { questions, isAdmin } = loaderData;
+  const { questions, isPlatformAdmin } = loaderData;
 
   return (
     <div className="mx-auto max-w-4xl p-6 lg:p-8">
       <nav className="mb-6 text-sm text-muted-foreground">
         {/* /instructor is instructor-only, so admins go back to their own list. */}
         <Link
-          to={isAdmin ? "/admin/courses" : "/instructor"}
+          to={isPlatformAdmin ? "/admin/courses" : "/instructor"}
           className="hover:text-foreground"
         >
-          {isAdmin ? "Manage Courses" : "My Courses"}
+          {isPlatformAdmin ? "Manage Courses" : "My Courses"}
         </Link>
         <span className="mx-2">/</span>
         <span className="text-foreground">Questions</span>
@@ -327,7 +327,7 @@ export default function InstructorQuestions({
       <div className="mb-6">
         <h1 className="text-3xl font-bold">Unanswered Questions</h1>
         <p className="mt-1 text-muted-foreground">
-          {isAdmin
+          {isPlatformAdmin
             ? "Questions across every course that no instructor or admin has replied to yet."
             : "Questions on your courses that you haven't replied to yet."}{" "}
           Replying here marks them answered.

@@ -844,8 +844,8 @@ export function getInstructorAnalytics(
     : null;
 
   // Unanswered questions. A question qualifies when it is top-level, not
-  // deleted, not written by someone who manages the course, and has no reply from the course's
-  // instructor or an admin.
+  // deleted, not written by someone who manages the course, and has no reply
+  // from someone who does.
   const questionsSince = rangeStart(range, now);
   const questionAuthor = alias(users, "author");
   const reply = alias(comments, "reply");
@@ -853,7 +853,7 @@ export function getInstructorAnalytics(
 
   // Correlated: matches a live reply, by someone who manages the course, to
   // the outer question.
-  const managerReply = db
+  const replyFromWhoeverManagesCourse = db
     .select({ one: sql`1` })
     .from(reply)
     .innerJoin(replyAuthor, eq(replyAuthor.id, reply.userId))
@@ -871,11 +871,11 @@ export function getInstructorAnalytics(
   const questionConditions = [
     isNull(comments.parentId),
     isNull(comments.deletedAt),
-    // Managers asking their own question shouldn't queue up as work for
-    // themselves.
+    // A question from someone who manages the course shouldn't queue up as
+    // work for them.
     ne(questionAuthor.role, UserRole.Admin),
     ne(comments.userId, courses.instructorId),
-    notExists(managerReply),
+    notExists(replyFromWhoeverManagesCourse),
   ];
 
   if (instructorId !== null) {

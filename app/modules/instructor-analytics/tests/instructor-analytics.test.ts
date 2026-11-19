@@ -657,7 +657,7 @@ describe("unanswered questions", () => {
     expect(asInstructor().questions).toEqual({ inRange: 1, older: 0 });
   });
 
-  it("still counts a question whose manager reply was deleted", () => {
+  it("still counts a question once the reply from whoever manages the course is deleted", () => {
     const question = comment(lessonId, student.id);
     comment(lessonId, instructor.id, { parentId: question.id, deleted: true });
 
@@ -670,7 +670,7 @@ describe("unanswered questions", () => {
     expect(asInstructor().questions).toEqual({ inRange: 0, older: 0 });
   });
 
-  it("does not count questions managers asked", () => {
+  it("does not count questions asked by whoever manages the course", () => {
     comment(lessonId, instructor.id);
     comment(lessonId, admin.id);
 

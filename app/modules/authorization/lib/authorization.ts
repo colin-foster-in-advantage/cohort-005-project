@@ -63,14 +63,14 @@ export async function requireInstructor(
 export async function requireInstructorOrPlatformAdmin(
   db: Db,
   request: Request
-): Promise<{ user: User; isAdmin: boolean }> {
+): Promise<{ user: User; isPlatformAdmin: boolean }> {
   const user = await requireSignedIn(db, request);
   if (user.role !== UserRole.Instructor && user.role !== UserRole.Admin) {
     throw data("Only Instructors and Platform Admins can access this page.", {
       status: 403,
     });
   }
-  return { user, isAdmin: user.role === UserRole.Admin };
+  return { user, isPlatformAdmin: user.role === UserRole.Admin };
 }
 
 function findCourse(db: Db, courseId: number): Course | undefined {
@@ -127,7 +127,7 @@ function findPurchase(db: Db, userId: number, courseId: number) {
 export type CourseAccess = {
   userId: number | null;
   user: User | undefined;
-  isAdmin: boolean;
+  isPlatformAdmin: boolean;
   /** The Instructor who owns this specific course. */
   isOwningInstructor: boolean;
   /** Manages the course: its own Instructor, or a Platform Admin. */
@@ -147,7 +147,7 @@ export type CourseAccess = {
 const SIGNED_OUT_ACCESS: CourseAccess = {
   userId: null,
   user: undefined,
-  isAdmin: false,
+  isPlatformAdmin: false,
   isOwningInstructor: false,
   managesCourse: false,
   enrolled: false,
@@ -166,9 +166,9 @@ export async function getCourseAccess(
   if (!user) return SIGNED_OUT_ACCESS;
 
   const course = findCourse(db, courseId);
-  const isAdmin = user.role === UserRole.Admin;
+  const isPlatformAdmin = user.role === UserRole.Admin;
   const isOwningInstructor = course?.instructorId === user.id;
-  const manages = isAdmin || isOwningInstructor;
+  const manages = isPlatformAdmin || isOwningInstructor;
   const enrolled = isEnrolled(db, user.id, courseId);
 
   // PPP only restricts Students who bought at a discount; whoever manages the
@@ -194,7 +194,7 @@ export async function getCourseAccess(
   return {
     userId: user.id,
     user,
-    isAdmin,
+    isPlatformAdmin,
     isOwningInstructor,
     managesCourse: manages,
     enrolled,

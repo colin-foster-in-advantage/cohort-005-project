@@ -175,7 +175,7 @@ describe("requireInstructorOrPlatformAdmin", () => {
     );
     expect(result).toMatchObject({
       user: { id: instructor.id },
-      isAdmin: false,
+      isPlatformAdmin: false,
     });
   });
 
@@ -183,7 +183,10 @@ describe("requireInstructorOrPlatformAdmin", () => {
     const result = await authz.requireInstructorOrPlatformAdmin(
       await requestAs(admin)
     );
-    expect(result).toMatchObject({ user: { id: admin.id }, isAdmin: true });
+    expect(result).toMatchObject({
+      user: { id: admin.id },
+      isPlatformAdmin: true,
+    });
   });
 });
 
@@ -301,7 +304,7 @@ describe("getCourseAccess", () => {
     );
     expect(access).toMatchObject({
       isOwningInstructor: true,
-      isAdmin: false,
+      isPlatformAdmin: false,
       managesCourse: true,
       canViewContent: true,
     });
