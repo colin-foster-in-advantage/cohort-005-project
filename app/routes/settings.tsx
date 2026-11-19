@@ -3,7 +3,7 @@ import { useFetcher } from "react-router";
 import { toast } from "sonner";
 import { z } from "zod";
 import type { Route } from "./+types/settings";
-import { getCurrentUserId } from "~/lib/session";
+import { authorization } from "~/modules/authorization/index.server";
 import { parseFormData } from "~/lib/validation";
 import { Card, CardContent, CardHeader } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
@@ -56,23 +56,8 @@ export function meta() {
 }
 
 export async function loader({ request }: Route.LoaderArgs) {
-  const currentUserId = await getCurrentUserId(request);
-
-  if (!currentUserId) {
-    throw data("Select a user from the DevUI panel to edit your details.", {
-      status: 401,
-    });
-  }
-
-  const currentUser = db
-    .select()
-    .from(users)
-    .where(eq(users.id, currentUserId))
-    .get();
-
-  if (!currentUser) {
-    throw data("User not found.", { status: 404 });
-  }
+  const currentUser = await authorization.requireSignedIn(request);
+  const currentUserId = currentUser.id;
 
   const refundRequests = listRefundRequestsForBuyer(db, currentUserId);
 
@@ -98,20 +83,7 @@ export async function loader({ request }: Route.LoaderArgs) {
 }
 
 export async function action({ request }: Route.ActionArgs) {
-  const currentUserId = await getCurrentUserId(request);
-
-  if (!currentUserId) {
-    throw data("You must be logged in.", { status: 401 });
-  }
-
-  const currentUser = db
-    .select()
-    .from(users)
-    .where(eq(users.id, currentUserId))
-    .get();
-  if (!currentUser) {
-    throw data("User not found.", { status: 404 });
-  }
+  const currentUser = await authorization.requireSignedIn(request);
 
   const formData = await request.formData();
   const parsed = parseFormData(formData, settingsSchema);
