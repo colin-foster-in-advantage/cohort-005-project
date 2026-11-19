@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { z } from "zod";
 import type { Route } from "./+types/courses.$slug.purchase";
 import { getCurrentUserId } from "~/lib/session";
+import { authorization } from "~/modules/authorization/index.server";
 import { db } from "~/db";
 import {
   courses,
@@ -299,10 +300,7 @@ export async function action({ params, request }: Route.ActionArgs) {
     throw data("Course not found.", { status: 404 });
   }
 
-  const currentUserId = await getCurrentUserId(request);
-  if (!currentUserId) {
-    throw data("You must be logged in.", { status: 401 });
-  }
+  const { id: currentUserId } = await authorization.requireSignedIn(request);
 
   const formData = await request.formData();
   const parsed = parseFormData(formData, purchaseActionSchema);
