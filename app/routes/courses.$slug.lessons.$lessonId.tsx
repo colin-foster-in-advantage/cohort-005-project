@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback } from "react";
 import { Link, useFetcher, useNavigate } from "react-router";
 import { toast } from "sonner";
 import type { Route } from "./+types/courses.$slug.lessons.$lessonId";
-import { getCurrentUserId } from "~/lib/session";
 import { authorization } from "~/modules/authorization/index.server";
 import { renderComment } from "~/lib/comment-markdown.server";
 import { markdown, type Markdown } from "~/lib/text";
@@ -838,26 +837,20 @@ export async function action({ params, request }: Route.ActionArgs) {
     throw data("Course not found", { status: 404 });
   }
 
-  const currentUserId = await getCurrentUserId(request);
-  if (!currentUserId) {
-    throw data("You must be logged in", { status: 401 });
-  }
+  // Every intent applies the loader's rule again: loader guards don't
+  // protect actions.
+  const access = await authorization.requireCanTakeCourse(request, course.id);
+  const currentUserId = access.userId;
+  requireLessonInCourse(lessonId, course.id);
 
   const formData = await request.formData();
   const intent = formData.get("intent");
 
-  // Comment intents re-check access here rather than relying on the loader —
-  // loader guards don't protect actions.
   if (
     intent === "create-comment" ||
     intent === "edit-comment" ||
     intent === "delete-comment"
   ) {
-    const access = await authorization.requireCanTakeCourse(
-      request,
-      course.id
-    );
-
     try {
       if (intent === "create-comment") {
         const parsed = parseFormData(formData, createCommentSchema);
@@ -927,14 +920,14 @@ export async function action({ params, request }: Route.ActionArgs) {
     }
   }
 
-  // Bookmark and Note intents re-check access here, like the comment intents
-  // above — loader guards don't protect actions.
   if (intent === "toggle-bookmark" || intent === "save-note") {
-    await authorization.requireCanTakeCourse(request, course.id);
-    requireLessonInCourse(lessonId, course.id);
-
     if (intent === "toggle-bookmark") {
-      const bookmarked = toggleBookmark(db, currentUserId, lessonId, new Date());
+      const bookmarked = toggleBookmark(
+        db,
+        currentUserId,
+        lessonId,
+        new Date()
+      );
       return { ok: true, bookmarked };
     }
 
