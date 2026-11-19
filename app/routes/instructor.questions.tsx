@@ -3,7 +3,7 @@ import { Link, data, isRouteErrorResponse, useFetcher } from "react-router";
 import { toast } from "sonner";
 import { z } from "zod";
 import type { Route } from "./+types/instructor.questions";
-import { requireInstructorOrAdmin, requireStaff } from "~/lib/access.server";
+import { authorization } from "~/modules/authorization/index.server";
 import { renderComment } from "~/lib/comment-markdown.server";
 import { createComment } from "~/lib/comments.server";
 import { defaultNotifications } from "~/lib/notifications.server";
@@ -47,8 +47,9 @@ function getUnansweredQuestions(instructorId: number | null): QueuedQuestion[] {
   const reply = alias(comments, "reply");
   const replyAuthor = alias(users, "reply_author");
 
-  // Correlated: matches a live reply, by staff, to the outer question.
-  const staffReply = db
+  // Correlated: matches a live reply, by someone who manages the course, to
+  // the outer question.
+  const managerReply = db
     .select({ one: sql`1` })
     .from(reply)
     .innerJoin(replyAuthor, eq(replyAuthor.id, reply.userId))
@@ -66,10 +67,11 @@ function getUnansweredQuestions(instructorId: number | null): QueuedQuestion[] {
   const conditions = [
     isNull(comments.parentId),
     isNull(comments.deletedAt),
-    // Staff asking their own question shouldn't queue up as work for themselves.
+    // Managers asking their own question shouldn't queue up as work for
+    // themselves.
     ne(author.role, UserRole.Admin),
     ne(comments.userId, courses.instructorId),
-    notExists(staffReply),
+    notExists(managerReply),
   ];
 
   if (instructorId !== null) {
@@ -132,10 +134,11 @@ export function meta() {
 }
 
 export async function loader({ request }: Route.LoaderArgs) {
-  const { userId, isAdmin } = await requireInstructorOrAdmin(request);
+  const { user, isAdmin } =
+    await authorization.requireInstructorOrPlatformAdmin(request);
 
   // Admins span every course; instructors see only the courses they own.
-  const questions = getUnansweredQuestions(isAdmin ? null : userId);
+  const questions = getUnansweredQuestions(isAdmin ? null : user.id);
 
   const rendered = await Promise.all(
     questions.map(async (question) => ({
@@ -167,10 +170,9 @@ export async function action({ request }: Route.ActionArgs) {
 
   // Answering as the course's voice — so it must be the course's own
   // instructor, or an admin.
-  const { userId: authorId } = await requireStaff(request, course.courseId);
-  if (!authorId) {
-    throw data("Select a user from the DevUI panel.", { status: 401 });
-  }
+  const {
+    user: { id: authorId },
+  } = await authorization.requireManagesCourse(request, course.courseId);
 
   const created = await createComment(
     db,
