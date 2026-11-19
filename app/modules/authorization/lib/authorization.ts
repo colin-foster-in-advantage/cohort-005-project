@@ -3,10 +3,11 @@ import { z } from "zod";
 import { and, eq } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import type * as schema from "~/db/schema";
-import { UserRole, courses, enrollments, purchases, users } from "~/db/schema";
+import { UserRole, courses, purchases, users } from "~/db/schema";
 import { getCurrentUserId } from "~/lib/session";
 import { resolveCountry } from "~/lib/country.server";
 import { checkPppAccess } from "~/lib/ppp";
+import { isEnrolled } from "~/lib/enrollments.server";
 
 export type Db = BetterSQLite3Database<typeof schema>;
 
@@ -107,16 +108,6 @@ export async function requireManagesCourse(
   }
 
   return { user, course };
-}
-
-function isEnrolled(db: Db, userId: number, courseId: number) {
-  return !!db
-    .select({ id: enrollments.id })
-    .from(enrollments)
-    .where(
-      and(eq(enrollments.userId, userId), eq(enrollments.courseId, courseId))
-    )
-    .get();
 }
 
 function findPurchase(db: Db, userId: number, courseId: number) {
