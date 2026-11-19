@@ -18,6 +18,10 @@ _Avoid_: Teacher, Author, Creator
 A member of Cadence staff who runs the platform. Only a Platform Admin decides Refund Requests.
 _Avoid_: Admin (on its own), the team, Staff
 
+**Manage (a course)**:
+What a course's own Instructor or a Platform Admin may do to that course: edit it, see its Students, and take it without an Enrollment. No one else manages a course, including other Instructors.
+_Avoid_: Staff, Owner, Speak for
+
 **Team Admin**:
 A Student who buys and manages a Team Licence. A Team Admin has no say over Refund Requests.
 _Avoid_: Admin (on its own)
