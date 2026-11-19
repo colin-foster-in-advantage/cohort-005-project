@@ -196,13 +196,16 @@ describe("requireManagesCourse", () => {
     ).toBe(401);
   });
 
-  it("throws 400 for a malformed course id", async () => {
-    expect(
-      await statusOf(
-        authz.requireManagesCourse(await requestAs(instructor), "abc")
-      )
-    ).toBe(400);
-  });
+  it.each(["abc", "5abc", "1.5", ""])(
+    "throws 400 for the malformed course id %j",
+    async (courseId) => {
+      expect(
+        await statusOf(
+          authz.requireManagesCourse(await requestAs(instructor), courseId)
+        )
+      ).toBe(400);
+    }
+  );
 
   it("throws 404 when the course doesn't exist", async () => {
     expect(

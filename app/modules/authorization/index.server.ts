@@ -53,10 +53,7 @@ export function createAuthorization(database: Db) {
      * as a route param or a number. Throws, in order: 401 signed out, 400
      * malformed id, 404 no such course, 403 doesn't manage it.
      */
-    requireManagesCourse(
-      request: Request,
-      courseId: string | number | undefined
-    ) {
+    requireManagesCourse(request: Request, courseId: string | number) {
       return requireManagesCourse(database, request, courseId);
     },
 

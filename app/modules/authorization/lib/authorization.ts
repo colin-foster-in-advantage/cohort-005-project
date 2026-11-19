@@ -1,4 +1,5 @@
 import { data } from "react-router";
+import { z } from "zod";
 import { and, eq } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import type * as schema from "~/db/schema";
@@ -78,22 +79,23 @@ function managesCourse(user: User, course: Pick<Course, "instructorId">) {
   return user.role === UserRole.Admin || course.instructorId === user.id;
 }
 
-/** A course id from a route param (parsed as routes always have) or a number. */
-function parseCourseId(courseId: string | number | undefined): number {
-  return typeof courseId === "number" ? courseId : parseInt(courseId ?? "", 10);
-}
+const courseIdSchema = z.union([
+  z.number().int(),
+  z.string().regex(/^\d+$/).transform(Number),
+]);
 
 export async function requireManagesCourse(
   db: Db,
   request: Request,
-  courseIdParam: string | number | undefined
+  courseIdParam: string | number
 ): Promise<{ user: User; course: Course }> {
   const user = await requireSignedIn(db, request);
 
-  const courseId = parseCourseId(courseIdParam);
-  if (Number.isNaN(courseId)) {
+  const parsed = courseIdSchema.safeParse(courseIdParam);
+  if (!parsed.success) {
     throw data("Invalid course ID.", { status: 400 });
   }
+  const courseId = parsed.data;
 
   const course = findCourse(db, courseId);
   if (!course) {
