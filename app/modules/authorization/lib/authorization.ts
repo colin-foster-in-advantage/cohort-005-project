@@ -46,7 +46,9 @@ export async function requirePlatformAdmin(
   return user;
 }
 
-/** Instructors only: Platform Admins are refused, as they are today. */
+// Refuses Platform Admins too. The instructor dashboard lists the user's own
+// courses and the new-course page makes the user the course's Instructor;
+// neither fits a Platform Admin, who manages courses from the admin pages.
 export async function requireInstructor(
   db: Db,
   request: Request
