@@ -15,8 +15,6 @@ import { isBookmarked, toggleBookmark } from "~/lib/bookmarks.server";
 import { getNote, saveNote } from "~/lib/notes.server";
 import { MAX_NOTE_LENGTH } from "~/lib/notes";
 import { db } from "~/db";
-import { quizzes } from "~/db/schema";
-import { eq } from "drizzle-orm";
 import { Button } from "~/components/ui/button";
 import { AlertTriangle } from "lucide-react";
 import { renderMarkdown } from "~/lib/markdown.server";
@@ -46,6 +44,7 @@ import {
   renderThread,
 } from "~/modules/lesson-page/thread.server";
 import {
+  getQuizById,
   getQuizByLessonId,
   getQuizWithQuestions,
   getBestAttempt,
@@ -431,7 +430,7 @@ export async function action({ params, request }: Route.ActionArgs) {
     }
     // Scope the quiz to this lesson so a quiz elsewhere can't be reached by
     // posting its id to this route.
-    const quiz = db.select().from(quizzes).where(eq(quizzes.id, quizId)).get();
+    const quiz = getQuizById(quizId);
     if (!quiz || quiz.lessonId !== lessonId) {
       throw data("Quiz not found", { status: 404 });
     }
