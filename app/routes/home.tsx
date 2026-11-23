@@ -57,13 +57,16 @@ function Stat({
 }) {
   return (
     <div className="flex items-center gap-4">
-      <div className="flex size-12 shrink-0 items-center justify-center rounded-lg bg-primary/10">
-        <Icon className="size-6 text-primary" />
-      </div>
-      <div>
-        <dd className="text-2xl font-bold">{value}</dd>
-        <dt className="text-sm text-muted-foreground">{label}</dt>
-      </div>
+      <dt className="flex size-12 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+        <Icon aria-hidden className="size-6 text-primary" />
+        <span className="sr-only">{label}</span>
+      </dt>
+      <dd>
+        <span className="block text-2xl font-bold">{value}</span>
+        <span aria-hidden className="block text-sm text-muted-foreground">
+          {label}
+        </span>
+      </dd>
     </div>
   );
 }
