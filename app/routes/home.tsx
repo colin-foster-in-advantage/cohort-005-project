@@ -318,7 +318,8 @@ export default function Home({ loaderData }: Route.ComponentProps) {
                     </span>
                     <span className="flex items-center gap-1">
                       <BookOpen className="size-3" />
-                      {course.lessonCount} lessons
+                      {course.lessonCount}{" "}
+                      {course.lessonCount === 1 ? "lesson" : "lessons"}
                     </span>
                   </CardFooter>
                 </Card>
