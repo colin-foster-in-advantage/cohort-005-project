@@ -29,7 +29,8 @@ name: Agent — Review A Pull Request
 # IT FIXES WHAT IT CAN
 #   A review that only lists findings hands the work to a human. This one
 #   fixes every finding it can, as commits on the PR's branch, and leaves the
-#   rest as inline comments on their file and line. The workflow pushes the
+#   rest as inline comments on their file and line. The verdict lists each
+#   finding left as one line linking to its comment. The workflow pushes the
 #   commits, never forced. If someone pushed to the branch during the run,
 #   GitHub rejects the push, and the commits go to a new branch,
 #   `<pr branch>-<run id>`, opened as a draft PR against the same base. The
@@ -246,6 +247,28 @@ jobs:
           echo "url=$url" >> "$GITHUB_OUTPUT"
           echo "number=${url##*/}" >> "$GITHUB_OUTPUT"
 
+      - name: Post the inline comments
+        # One review, event COMMENT, with a comment on each line the agent
+        # left a finding on. They go where the fixes went: the fallback PR if
+        # the push was rejected. review.ts already kept every finding outside
+        # the diff off this review, because GitHub rejects the whole review
+        # for one. It runs before the verdict, which links to each comment.
+        env:
+          GH_TOKEN: ${{ secrets.FACTORY_PAT }}
+          TARGET: ${{ steps.fallback.outputs.number || github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          review="$RUNNER_TEMP/review-comments.json"
+          if [ "$(jq '.comments | length' "$review")" -eq 0 ]; then
+            echo "No inline comments: the review fixed or passed everything."
+            exit 0
+          fi
+          id="$(gh api --method POST "repos/$GH_REPO/pulls/$TARGET/reviews" \
+            --input "$review" --jq .id)"
+          # Each posted comment's URL, for the verdict's links.
+          gh api --paginate "repos/$GH_REPO/pulls/$TARGET/reviews/$id/comments" \
+            --jq '.[] | {body, html_url}' | jq -s . > "$RUNNER_TEMP/review-posted.json"
+
       - name: Post the verdict on the pull request
         if: always()
         env:
@@ -264,6 +287,27 @@ jobs:
               echo "The fixes are on \`$FALLBACK_BRANCH\`${FALLBACK_URL:+, opened as ${FALLBACK_URL}}. Labelled \`agent:blocked\`: keep one of the two PRs."
             } >> /tmp/review-verdict.md
           fi
+          # The findings left, one linked line each, before the rules list:
+          # an inline one links to its comment, one outside the diff (or one
+          # whose review GitHub refused) to its line in the code.
+          left="$RUNNER_TEMP/review-left.json"
+          posted="$RUNNER_TEMP/review-posted.json"
+          [ -s "$posted" ] || echo '[]' > "$posted"
+          if [ -s "$left" ] && [ "$(jq length "$left")" -gt 0 ]; then
+            jq -r --slurpfile posted "$posted" '
+              "## Left for you", "",
+              (.[] | . as $f
+                | ([$posted[0][] | select(.body == $f.body) | .html_url][0] // $f.url) as $url
+                | "- [\($f.summary | gsub("\\]"; "\\]"))](\($url))")
+            ' "$left" > /tmp/review-left.md
+            awk -v list=/tmp/review-left.md '
+              function put(  l) { while ((getline l < list) > 0) print l; print ""; done = 1 }
+              /^## Rules this review wanted/ && !done { put() }
+              { print }
+              END { if (!done) { print ""; put() } }
+            ' /tmp/review-verdict.md > /tmp/review-verdict.tmp
+            mv /tmp/review-verdict.tmp /tmp/review-verdict.md
+          fi
           {
             echo ""
             echo "---"
@@ -277,24 +321,6 @@ jobs:
           attach=()
           for png in /tmp/evidence/*.png; do attach+=(--attach "$png"); done
           gh pr comment "$PR_NUMBER" --body-file /tmp/review-verdict.md "${attach[@]}"
-
-      - name: Post the inline comments
-        # One review, event COMMENT, with a comment on each line the agent
-        # left a finding on. They go where the fixes went: the fallback PR if
-        # the push was rejected. review.ts already dropped every comment
-        # outside the diff, because GitHub rejects the whole review for one.
-        env:
-          GH_TOKEN: ${{ secrets.FACTORY_PAT }}
-          TARGET: ${{ steps.fallback.outputs.number || github.event.pull_request.number }}
-        run: |
-          set -euo pipefail
-          review="$RUNNER_TEMP/review-comments.json"
-          if [ "$(jq '.comments | length' "$review")" -eq 0 ]; then
-            echo "No inline comments: the review fixed or passed everything."
-            exit 0
-          fi
-          gh api --method POST "repos/$GH_REPO/pulls/$TARGET/reviews" \
-            --input "$review" --silent
 
       - name: Mark the pull request ready
         # No `always()` here. If the agent broke, nobody has read the PR, so

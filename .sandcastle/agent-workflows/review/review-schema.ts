@@ -1,12 +1,19 @@
 import { z } from "zod/v4";
 
 // The findings the review left unfixed. The workflow posts each one as an
-// inline comment on the pull request, on its file and line.
+// inline comment on the pull request, on its file and line, and lists its
+// summary in the verdict as a link to that comment.
 export const reviewSchema = z
   .strictObject({
     comments: z
       .array(
         z.strictObject({
+          summary: z
+            .string()
+            .min(1)
+            .describe(
+              "The finding in one line, under 100 characters, for the verdict's list of links. Plain text, no links."
+            ),
           path: z
             .string()
             .min(1)

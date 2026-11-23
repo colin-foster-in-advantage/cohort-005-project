@@ -10,10 +10,11 @@ import { diffLines } from "./diff-lines";
 import { reviewSchema } from "./review-schema";
 
 const BASE_REF = required("BASE_REF");
+const GH_REPO = required("GH_REPO");
 
 // The agent fixes and commits, writes the verdict file, and hands back the
-// findings it left. The workflow pushes the commits, posts the verdict and
-// the inline comments, and marks the PR ready.
+// findings it left. The workflow pushes the commits, posts the inline
+// comments and then the verdict, and marks the PR ready.
 const result = await runWithExtraction({
   name: "review",
   agent: claudeAgent(),
@@ -32,19 +33,41 @@ const result = await runWithExtraction({
 const git = (...args: string[]): string =>
   execFileSync("git", args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
 
-// The diff after the agent's commits: the comments land on that.
+const sha = git("rev-parse", "HEAD").trim();
+const blobUrl = (file: string, line: number): string =>
+  `https://github.com/${GH_REPO}/blob/${sha}/${encodeURI(file)}#L${line}`;
+
+// The diff after the agent's commits: the comments land on that. GitHub
+// rejects a whole review for one comment outside the hunks, so those stay
+// off the review and appear in the verdict only, linked to the code.
 const hunks = diffLines(git("diff", `origin/${BASE_REF}...HEAD`));
 const { comments: found }: z.infer<typeof reviewSchema> = result.output;
-const comments = found.filter(({ path: file, line }) => {
-  if (hunks.get(file)?.has(line)) return true;
-  console.error(`Dropping the comment on ${file}:${line}: not in the diff.`);
-  return false;
+const left = found.map(({ summary, path: file, line, body }) => {
+  const inline = hunks.get(file)?.has(line) ?? false;
+  if (!inline) {
+    console.error(
+      `Not in the diff, so no inline comment for ${file}:${line}. The verdict links to the code.`
+    );
+  }
+  return { summary, path: file, line, body, inline, url: blobUrl(file, line) };
 });
 
 // The request body for POST /repos/{owner}/{repo}/pulls/{n}/reviews.
 writeJson("review-comments.json", {
-  commit_id: git("rev-parse", "HEAD").trim(),
+  commit_id: sha,
   event: "COMMENT",
   body: "The findings this review left for you, on their lines. The verdict is in its own comment.",
-  comments: comments.map((comment) => ({ ...comment, side: "RIGHT" })),
+  comments: left
+    .filter(({ inline }) => inline)
+    .map(({ path: file, line, body }) => ({
+      path: file,
+      line,
+      body,
+      side: "RIGHT",
+    })),
 });
+
+// Every finding left, for the verdict step's list of links. An inline one
+// links to its comment once posted; `url` is the fallback, and the only
+// link for a finding outside the diff.
+writeJson("review-left.json", left);
