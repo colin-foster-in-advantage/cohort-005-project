@@ -12,7 +12,8 @@ import {
 
 export type Db = BetterSQLite3Database<typeof schema>;
 
-export const FEATURED_COURSE_LIMIT = 3;
+// One spotlight course in the hero, then a row of three below it.
+export const FEATURED_COURSE_LIMIT = 4;
 
 export type FeaturedCourse = {
   id: number;

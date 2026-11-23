@@ -84,11 +84,12 @@ describe("featured courses", () => {
     addCourse("March", { createdAt: "2030-03-01T00:00:00.000Z" });
     addCourse("February", { createdAt: "2030-02-01T00:00:00.000Z" });
     addCourse("April", { createdAt: "2030-04-01T00:00:00.000Z" });
+    addCourse("May", { createdAt: "2030-05-01T00:00:00.000Z" });
 
     const titles = landing().featuredCourses.map((course) => course.title);
 
-    expect(FEATURED_COURSE_LIMIT).toBe(3);
-    expect(titles).toEqual(["April", "March", "February"]);
+    expect(FEATURED_COURSE_LIMIT).toBe(4);
+    expect(titles).toEqual(["May", "April", "March", "February"]);
   });
 
   it("breaks a tie on creation time by the later course", () => {

@@ -71,7 +71,7 @@ function Stat({
   );
 }
 
-function NewestCourse({ course }: { course: FeaturedCourse }) {
+function CourseSpotlight({ course }: { course: FeaturedCourse }) {
   return (
     <div className="relative">
       <div
@@ -147,7 +147,7 @@ export async function loader({ request }: Route.LoaderArgs) {
 
 export default function Home({ loaderData }: Route.ComponentProps) {
   const {
-    featuredCourses,
+    featuredCourses: [spotlight, ...moreCourses],
     stats,
     users,
     currentUser,
@@ -255,7 +255,7 @@ export default function Home({ loaderData }: Route.ComponentProps) {
             ))}
           </ul>
         </div>
-        {featuredCourses[0] && <NewestCourse course={featuredCourses[0]} />}
+        {spotlight && <CourseSpotlight course={spotlight} />}
       </section>
 
       <section className="border-y border-border bg-muted/50 py-12">
@@ -270,7 +270,7 @@ export default function Home({ loaderData }: Route.ComponentProps) {
         </dl>
       </section>
 
-      {featuredCourses.length > 0 && (
+      {moreCourses.length > 0 && (
         <section className="mx-auto max-w-6xl px-6 py-20">
           <div className="mb-10 flex flex-wrap items-end justify-between gap-4">
             <div>
@@ -289,7 +289,7 @@ export default function Home({ loaderData }: Route.ComponentProps) {
             </Button>
           </div>
           <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
-            {featuredCourses.map((course) => (
+            {moreCourses.map((course) => (
               <Link
                 key={course.id}
                 to={`/courses/${course.slug}`}
